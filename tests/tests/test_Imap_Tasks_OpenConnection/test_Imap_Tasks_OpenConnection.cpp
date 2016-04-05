@@ -31,7 +31,9 @@
 #include "Imap/Tasks/OpenConnectionTask.h"
 
 Q_DECLARE_METATYPE(QList<QSslCertificate>)
+#if QT_VERSION < 0x050000
 Q_DECLARE_METATYPE(QList<QSslError>)
+#endif
 Q_DECLARE_METATYPE(Imap::Mailbox::ImapTask*)
 
 void ImapModelOpenConnectionTest::initTestCase()
