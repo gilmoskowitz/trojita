@@ -607,11 +607,19 @@ void OutgoingPage::save(QSettings &s)
 XtConnectPage::XtConnectPage(QWidget *parent, QSettings &s, ImapPage *imapPage): QWidget(parent), imap(imapPage)
 {
     // Take care not to clash with the cache of the GUI
-    QString cacheLocation = QDesktopServices::storageLocation(QDesktopServices::CacheLocation);
+    QString cacheLocation;
+#if QT_VERSION < 0x050000
+    cacheLocation = QDesktopServices::storageLocation(QDesktopServices::CacheLocation);
+#else
+    QStringList cacheLocations = QStandardPaths::standardLocations(QStandardPaths::CacheLocation);
+    if (! cacheLocations.isEmpty()) {
+      cacheLocation = cacheLocations.at(0);
+    }
+#endif
     if (cacheLocation.isEmpty())
         cacheLocation = QDir::homePath() + QLatin1String("/.xtconnect-trojita");
     else
-        cacheLocation += QString::fromAscii("/xtconnect-trojita");
+        cacheLocation += QString::fromLatin1("/xtconnect-trojita");
     QFormLayout *layout = new QFormLayout(this);
     cacheDir = new QLineEdit(s.value(Common::SettingsNames::xtConnectCacheDirectory, cacheLocation).toString(), this);
     layout->addRow(tr("Cache Directory"), cacheDir);
@@ -681,7 +689,7 @@ void XtConnectPage::save(QSettings &s)
 
 void XtConnectPage::saveXtConfig()
 {
-    QSettings s(QSettings::UserScope, QString::fromAscii("xTuple.com"), QString::fromAscii("xTuple"));
+    QSettings s(QSettings::UserScope, QString::fromLatin1("xTuple.com"), QString::fromLatin1("xTuple"));
 
     // Copy the IMAP settings
     Q_ASSERT(imap);

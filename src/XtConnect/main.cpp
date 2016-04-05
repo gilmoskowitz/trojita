@@ -33,11 +33,11 @@
 
 int main( int argc, char** argv) {
     QCoreApplication app( argc, argv );
-    QCoreApplication::setApplicationName( QString::fromAscii("xtconnect-trojita") );
+    QCoreApplication::setApplicationName( QString::fromLatin1("xtconnect-trojita") );
     Common::setCoreApplicationData();
-    QCoreApplication::setOrganizationDomain( QString::fromAscii("xtuple.com") );
-    QCoreApplication::setOrganizationName( QString::fromAscii("xtuple.com") );
-    QSettings s(QSettings::UserScope, QString::fromAscii("xTuple.com"), QString::fromAscii("xTuple"));
+    QCoreApplication::setOrganizationDomain( QString::fromLatin1("xtuple.com") );
+    QCoreApplication::setOrganizationName( QString::fromLatin1("xtuple.com") );
+    QSettings s(QSettings::UserScope, QString::fromLatin1("xTuple.com"), QString::fromLatin1("xTuple"));
     XtConnect::XtConnect conn(0, &s);
     return app.exec();
 }

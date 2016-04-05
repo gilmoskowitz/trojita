@@ -135,14 +135,14 @@ void SqlStorage::_fail(const QString &message, const QSqlQuery &query)
 {
     if (!db.isOpen())
         reconnect->start();
-    emit encounteredError(QString::fromAscii("SqlStorage: Query Error: %1: %2").arg(message, query.lastError().text()));
+    emit encounteredError(QString::fromLatin1("SqlStorage: Query Error: %1: %2").arg(message, query.lastError().text()));
 }
 
 void SqlStorage::_fail(const QString &message, const QSqlDatabase &database)
 {
     if (!db.isOpen())
         reconnect->start();
-    emit encounteredError(QString::fromAscii("SqlStorage: Query Error: %1: %2").arg(message, database.lastError().text()));
+    emit encounteredError(QString::fromLatin1("SqlStorage: Query Error: %1: %2").arg(message, database.lastError().text()));
 }
 
 void SqlStorage::fail(const QString &message)

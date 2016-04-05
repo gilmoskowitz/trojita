@@ -135,7 +135,7 @@ XSqlQuery::XSqlQuery(const QString &pSql, QSqlDatabase db) :
   QSqlQuery(QString::null, db)
 {
   _data = new XSqlQueryPrivate(this);
-  exec(pSql.toAscii().data());
+  exec(pSql.toLatin1().data());
 }
 
 XSqlQuery::XSqlQuery(const QSqlQuery & other) :
