@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,10 @@
 
 
 #include "Fake_ListChildMailboxesTask.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
+#include "Imap/Model/TaskFactory.h"
 #include "GetAnyConnectionTask.h"
-#include "Model.h"
-#include "MailboxTree.h"
-#include "TaskFactory.h"
 
 namespace Imap
 {
@@ -36,8 +36,7 @@ namespace Mailbox
 Fake_ListChildMailboxesTask::Fake_ListChildMailboxesTask(Model *model, const QModelIndex &mailbox):
     ListChildMailboxesTask(model, mailbox)
 {
-    TreeItemMailbox *mailboxPtr = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailbox.internalPointer()));
-    Q_ASSERT(mailboxPtr);
+    Q_ASSERT(!mailbox.isValid() || dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailbox.internalPointer())));
 }
 
 void Fake_ListChildMailboxesTask::perform()
@@ -47,7 +46,7 @@ void Fake_ListChildMailboxesTask::perform()
 
     IMAP_TASK_CHECK_ABORT_DIE;
 
-    TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
+    TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(model->translatePtr(mailboxIndex)));
     Q_ASSERT(mailbox);
     parser = conn->parser;
     QList<Responses::List> &listResponses = model->accessParser(parser).listResponses;
@@ -59,8 +58,8 @@ void Fake_ListChildMailboxesTask::perform()
         if (it.key() != mailbox->mailbox())
             continue;
         for (QStringList::const_iterator childIt = it->begin(); childIt != it->end(); ++childIt) {
-            QString childMailbox = mailbox->mailbox().isEmpty() ? *childIt : QString::fromUtf8("%1^%2").arg(mailbox->mailbox(), *childIt);
-            listResponses.append(Responses::List(Responses::LIST, QStringList(), QLatin1String("^"), childMailbox, QMap<QByteArray, QVariant>()));
+            QString childMailbox = mailbox->mailbox().isEmpty() ? *childIt : QStringLiteral("%1^%2").arg(mailbox->mailbox(), *childIt);
+            listResponses.append(Responses::List(Responses::LIST, QStringList(), QStringLiteral("^"), childMailbox, QMap<QByteArray, QVariant>()));
         }
     }
     model->finalizeList(parser, mailbox);

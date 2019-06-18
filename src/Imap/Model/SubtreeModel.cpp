@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -23,7 +23,6 @@
 #include "SubtreeModel.h"
 #include "MailboxModel.h"
 #include "Model.h"
-#include "QAIM_reset.h"
 
 namespace Imap
 {
@@ -64,10 +63,10 @@ SubtreeModelOfModel::SubtreeModelOfModel(QObject *parent):
 SubtreeModel::SubtreeModel(QObject *parent, SubtreeClassAdaptor *classSpecificAdaptor):
     QAbstractProxyModel(parent), m_classAdaptor(classSpecificAdaptor), m_usingInvalidRoot(false)
 {
-    connect(this, SIGNAL(layoutChanged()), this, SIGNAL(validityChanged()));
-    connect(this, SIGNAL(modelReset()), this, SIGNAL(validityChanged()));
-    connect(this, SIGNAL(rowsInserted(QModelIndex,int,int)), this, SIGNAL(validityChanged()));
-    connect(this, SIGNAL(rowsRemoved(QModelIndex,int,int)), this, SIGNAL(validityChanged()));
+    connect(this, &QAbstractItemModel::layoutChanged, this, &SubtreeModel::validityChanged);
+    connect(this, &QAbstractItemModel::modelReset, this, &SubtreeModel::validityChanged);
+    connect(this, &QAbstractItemModel::rowsInserted, this, &SubtreeModel::validityChanged);
+    connect(this, &QAbstractItemModel::rowsRemoved, this, &SubtreeModel::validityChanged);
 }
 
 SubtreeModel::~SubtreeModel()
@@ -80,23 +79,20 @@ void SubtreeModel::setSourceModel(QAbstractItemModel *sourceModel)
     m_classAdaptor->assertCorrectClass(sourceModel);
 
     if (this->sourceModel()) {
-        disconnect(this->sourceModel(), 0, this, 0);
+        disconnect(this->sourceModel(), nullptr, this, nullptr);
     }
     QAbstractProxyModel::setSourceModel(sourceModel);
     if (sourceModel) {
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-        setRoleNames(sourceModel->roleNames());
-#endif
         // FIXME: will need to be expanded when the source model supports more signals...
-        connect(sourceModel, SIGNAL(modelAboutToBeReset()), this, SLOT(handleModelAboutToBeReset()));
-        connect(sourceModel, SIGNAL(modelReset()), this, SLOT(handleModelReset()));
-        connect(sourceModel, SIGNAL(layoutAboutToBeChanged()), this, SIGNAL(layoutAboutToBeChanged()));
-        connect(sourceModel, SIGNAL(layoutChanged()), this, SIGNAL(layoutChanged()));
-        connect(sourceModel, SIGNAL(dataChanged(QModelIndex,QModelIndex)), this, SLOT(handleDataChanged(QModelIndex,QModelIndex)));
-        connect(sourceModel, SIGNAL(rowsAboutToBeRemoved(QModelIndex,int,int)), this, SLOT(handleRowsAboutToBeRemoved(QModelIndex,int,int)));
-        connect(sourceModel, SIGNAL(rowsRemoved(QModelIndex,int,int)), this, SLOT(handleRowsRemoved(QModelIndex,int,int)));
-        connect(sourceModel, SIGNAL(rowsAboutToBeInserted(QModelIndex,int,int)), this, SLOT(handleRowsAboutToBeInserted(QModelIndex,int,int)));
-        connect(sourceModel, SIGNAL(rowsInserted(QModelIndex,int,int)), this, SLOT(handleRowsInserted(QModelIndex,int,int)));
+        connect(sourceModel, &QAbstractItemModel::modelAboutToBeReset, this, &SubtreeModel::handleModelAboutToBeReset);
+        connect(sourceModel, &QAbstractItemModel::modelReset, this, &SubtreeModel::handleModelReset);
+        connect(sourceModel, &QAbstractItemModel::layoutAboutToBeChanged, this, &QAbstractItemModel::layoutAboutToBeChanged);
+        connect(sourceModel, &QAbstractItemModel::layoutChanged, this, &QAbstractItemModel::layoutChanged);
+        connect(sourceModel, &QAbstractItemModel::dataChanged, this, &SubtreeModel::handleDataChanged);
+        connect(sourceModel, &QAbstractItemModel::rowsAboutToBeRemoved, this, &SubtreeModel::handleRowsAboutToBeRemoved);
+        connect(sourceModel, &QAbstractItemModel::rowsRemoved, this, &SubtreeModel::handleRowsRemoved);
+        connect(sourceModel, &QAbstractItemModel::rowsAboutToBeInserted, this, &SubtreeModel::handleRowsAboutToBeInserted);
+        connect(sourceModel, &QAbstractItemModel::rowsInserted, this, &SubtreeModel::handleRowsInserted);
     }
 }
 
@@ -166,7 +162,7 @@ void SubtreeModel::handleDataChanged(const QModelIndex &topLeft, const QModelInd
 QModelIndex SubtreeModel::mapToSource(const QModelIndex &proxyIndex) const
 {
     if (!proxyIndex.isValid())
-        return QModelIndex();
+        return m_rootIndex;
 
     if (!sourceModel())
         return QModelIndex();
@@ -237,26 +233,26 @@ int SubtreeModel::rowCount(const QModelIndex &parent) const
 {
     if (!sourceModel())
         return 0;
-    if (m_usingInvalidRoot)
-        return sourceModel()->rowCount();
-    if (!m_rootIndex.isValid())
+    if (parent.isValid()) {
+        return sourceModel()->rowCount(mapToSource(parent));
+    } else if (m_rootIndex.isValid() || m_usingInvalidRoot) {
+        return sourceModel()->rowCount(m_rootIndex);
+    } else {
         return 0;
-    return parent.isValid() ?
-                sourceModel()->rowCount(mapToSource(parent)) :
-                sourceModel()->rowCount(m_rootIndex);
+    }
 }
 
 int SubtreeModel::columnCount(const QModelIndex &parent) const
 {
     if (!sourceModel())
         return 0;
-    if (m_usingInvalidRoot)
-        return sourceModel()->columnCount();
-    if (!m_rootIndex.isValid())
+    if (parent.isValid()) {
+        return sourceModel()->columnCount(mapToSource(parent));
+    } else if (m_rootIndex.isValid() || m_usingInvalidRoot) {
+        return sourceModel()->columnCount(m_rootIndex);
+    } else {
         return 0;
-    return parent.isValid() ?
-                qMin(sourceModel()->columnCount(mapToSource(parent)), 1) :
-                qMin(sourceModel()->columnCount(m_rootIndex), 1);
+    }
 }
 
 void SubtreeModel::handleRowsAboutToBeRemoved(const QModelIndex &parent, int first, int last)
@@ -273,7 +269,8 @@ void SubtreeModel::handleRowsRemoved(const QModelIndex &parent, int first, int l
 
     if (!m_usingInvalidRoot && !m_rootIndex.isValid()) {
         // This is our chance to report back about everything being deleted
-        RESET_MODEL;
+        beginResetModel();
+        endResetModel();
         return;
     }
 
@@ -309,7 +306,30 @@ QModelIndex SubtreeModel::rootIndex() const
     return m_rootIndex;
 }
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+bool SubtreeModel::hasChildren(const QModelIndex &parent) const
+{
+    if (!sourceModel())
+        return false;
+    if (parent.isValid()) {
+        return sourceModel()->hasChildren(mapToSource(parent));
+    } else if (m_rootIndex.isValid() || m_usingInvalidRoot) {
+        return sourceModel()->hasChildren(m_rootIndex);
+    } else {
+        return false;
+    }
+}
+
+/** @short Reimplemented; this is needed because QAbstractProxyModel does not provide this forward */
+bool SubtreeModel::dropMimeData(const QMimeData *data, Qt::DropAction action, int row, int column, const QModelIndex &parent)
+{
+    if (!sourceModel())
+        return false;
+    if (!m_usingInvalidRoot && !m_rootIndex.isValid())
+        return false;
+    return sourceModel()->dropMimeData(data, action, row, column,
+                                       parent.isValid() ? mapToSource(parent) : QModelIndex(m_rootIndex));
+}
+
 QHash<int,QByteArray> SubtreeModel::roleNames() const
 {
     if (sourceModel())
@@ -317,7 +337,6 @@ QHash<int,QByteArray> SubtreeModel::roleNames() const
     else
         return QHash<int, QByteArray>();
 }
-#endif
 
 }
 }

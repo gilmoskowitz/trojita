@@ -9,6 +9,14 @@
    <bool>true</bool>
   </property>
   <widget class="QWidget" name="scrollAreaWidgetContents">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>230</width>
+     <height>176</height>
+    </rect>
+   </property>
    <layout class="QVBoxLayout" name="verticalLayout">
     <item>
      <widget class="QGroupBox" name="offlineModeGroup">
@@ -37,7 +45,7 @@
           </sizepolicy>
          </property>
          <property name="text">
-          <string>Don't use cache</string>
+          <string>&amp;Don't use cache</string>
          </property>
         </widget>
        </item>
@@ -50,7 +58,7 @@
           </sizepolicy>
          </property>
          <property name="text">
-          <string>Remember messages for X days</string>
+          <string>&amp;Remember messages for X days</string>
          </property>
         </widget>
        </item>
@@ -79,7 +87,7 @@
           </sizepolicy>
          </property>
          <property name="text">
-          <string>Store forever</string>
+          <string>Store &amp;forever</string>
          </property>
         </widget>
        </item>

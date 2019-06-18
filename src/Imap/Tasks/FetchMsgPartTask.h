@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -36,7 +36,7 @@ class FetchMsgPartTask : public ImapTask
 {
     Q_OBJECT
 public:
-    FetchMsgPartTask(Model *model, const QModelIndex &mailbox, const QList<uint> &uids, const QStringList &parts);
+    FetchMsgPartTask(Model *model, const QModelIndex &mailbox, const Imap::Uids &uids, const QList<QByteArray> &parts);
     virtual void perform();
 
     virtual bool handleFetch(const Imap::Responses::Fetch *const resp);
@@ -45,11 +45,13 @@ public:
     virtual QString debugIdentification() const;
     virtual QVariant taskData(const int role) const;
     virtual bool needsMailbox() const {return true;}
+protected slots:
+    void markPendingItemsUnavailable();
 private:
     CommandHandle tag;
     ImapTask *conn;
-    QList<uint> uids;
-    QStringList parts;
+    Imap::Uids uids;
+    QList<QByteArray> parts;
     QPersistentModelIndex mailboxIndex;
 };
 

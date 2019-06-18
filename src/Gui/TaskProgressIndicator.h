@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,7 +24,9 @@
 #define GUI_TASKPROGRESSINDICATOR_H
 
 #include <QPointer>
-#include <QProgressBar>
+#include "Gui/Spinner.h"
+
+class QTimer;
 
 namespace Imap
 {
@@ -38,8 +40,10 @@ class VisibleTasksModel;
 namespace Gui
 {
 
+class Spinner;
+
 /** @short A GUI element for showing whether anything is "using" the IMAP connection */
-class TaskProgressIndicator : public QProgressBar
+class TaskProgressIndicator : public Spinner
 {
     Q_OBJECT
 public:
@@ -50,12 +54,11 @@ public:
 public slots:
     void updateActivityIndication();
 
-protected:
-    void mousePressEvent(QMouseEvent *event);
-
 private:
     /** @short Model for a list of "visible tasks" */
     QPointer<Imap::Mailbox::VisibleTasksModel> m_visibleTasksModel;
+
+    QTimer *m_busyCursorTrigger;
 
     /** @short Is there any ongoing activity? */
     bool m_busy;

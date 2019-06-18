@@ -45,7 +45,7 @@ These modifications are released into public domain.
 
 #include "rfc1951.h"
 
-namespace Imap {
+namespace Streams {
 
 Rfc1951Compressor::Rfc1951Compressor(int chunkSize)
 {
@@ -63,12 +63,12 @@ Rfc1951Compressor::Rfc1951Compressor(int chunkSize)
                           -(MAX_WBITS-2), // 32KB // MAX_WBITS == 15 (zconf.h) MEM128KB
                           MAX_MEM_LEVEL-2 , // 64KB // MAX_MEM_LEVEL = 9 (zconf.h) MEM256KB
                           Z_DEFAULT_STRATEGY) == Z_OK);
-    Q_ASSERT(ok);
+    Q_ASSERT(ok); Q_UNUSED(ok);
 }
 
 Rfc1951Compressor::~Rfc1951Compressor()
 {
-    delete _buffer;
+    delete[] _buffer;
     deflateEnd(&_zStream);
 }
 
@@ -104,13 +104,13 @@ Rfc1951Decompressor::Rfc1951Decompressor(int chunkSize)
     _zStream.avail_in = 0;
     _zStream.next_in = Z_NULL;
     bool ok(inflateInit2(&_zStream, -MAX_WBITS) == Z_OK);
-    Q_ASSERT(ok);
+    Q_ASSERT(ok); Q_UNUSED(ok);
 }
 
 Rfc1951Decompressor::~Rfc1951Decompressor()
 {
     inflateEnd(&_zStream);
-    delete _stagingBuffer;
+    delete[] _stagingBuffer;
 }
 
 bool Rfc1951Decompressor::consume(QIODevice *in)

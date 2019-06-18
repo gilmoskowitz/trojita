@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -19,10 +19,12 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifndef DELETIONWATCHER_H
-#define DELETIONWATCHER_H
+#ifndef STREAMS_DELETIONWATCHER_H
+#define STREAMS_DELETIONWATCHER_H
 
 #include <QObject>
+
+namespace Streams {
 
 class DeletionWatcher : public QObject
 {
@@ -34,4 +36,6 @@ public slots:
 
 };
 
-#endif // DELETIONWATCHER_H
+}
+
+#endif

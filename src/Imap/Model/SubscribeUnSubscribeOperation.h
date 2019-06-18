@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -29,6 +29,12 @@ namespace Mailbox
 {
 
 typedef enum { SUBSCRIBE, UNSUBSCRIBE } SubscribeUnsubscribeOperation;
+
+/** @short Automatic subscribe during mailbox creation */
+enum class AutoSubscription {
+    NO_EXPLICIT_SUBSCRIPTION, /**< Do not do anything, leave stuff to server */
+    SUBSCRIBE, /**< Request subscription */
+};
 
 }
 }

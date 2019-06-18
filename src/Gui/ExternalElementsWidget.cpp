@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -38,7 +38,7 @@ ExternalElementsWidget::ExternalElementsWidget(QWidget *parent):
     layout->addWidget(loadStuffButton);
     layout->addStretch();
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    connect(loadStuffButton, SIGNAL(clicked()), this, SIGNAL(loadingEnabled()));
+    connect(loadStuffButton, &QAbstractButton::clicked, this, &ExternalElementsWidget::loadingEnabled);
 
     /*
     FIXME: would be cool to have more clear error messages

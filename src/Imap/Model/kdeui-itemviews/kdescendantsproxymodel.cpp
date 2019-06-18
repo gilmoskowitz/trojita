@@ -38,7 +38,7 @@ class KDescendantsProxyModelPrivate
       m_ignoreNextLayoutChanged(false),
       m_relayouting(false),
       m_displayAncestorData( false ),
-      m_ancestorSeparator( QLatin1String( " / " ) )
+      m_ancestorSeparator( QStringLiteral( " / " ) )
   {
   }
 
@@ -83,9 +83,7 @@ class KDescendantsProxyModelPrivate
 
   QList<QPersistentModelIndex> m_layoutChangePersistentIndexes;
   QModelIndexList m_proxyIndexes;
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
   QHash<int,QByteArray> m_roleNames;
-#endif
 };
 
 void KDescendantsProxyModelPrivate::resetInternalData()
@@ -574,8 +572,7 @@ void KDescendantsProxyModelPrivate::sourceRowsInserted(const QModelIndex &parent
 {
   Q_Q(KDescendantsProxyModel);
 
-  const QModelIndex sourceStart = q->sourceModel()->index(start, 0, parent);
-  Q_ASSERT(sourceStart.isValid());
+  Q_ASSERT(q->sourceModel()->index(start, 0, parent).isValid());
 
   const int rowCount = q->sourceModel()->rowCount(parent);
   Q_ASSERT(rowCount > 0);
@@ -999,20 +996,14 @@ Qt::DropActions KDescendantsProxyModel::supportedDropActions() const
 
 void KDescendantsProxyModel::proxySetRoleNames(const QHash<int, QByteArray> &roleNames)
 {
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    setRoleNames(roleNames);
-#else
   Q_D(KDescendantsProxyModel);
   d->m_roleNames = roleNames;
-#endif
 }
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
 QHash<int,QByteArray> KDescendantsProxyModel::roleNames() const
 {
   Q_D(const KDescendantsProxyModel);
   return d->m_roleNames;
 }
-#endif
 
 #include "moc_kdescendantsproxymodel.cpp"

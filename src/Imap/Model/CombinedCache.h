@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -52,7 +52,7 @@ class CombinedCache : public AbstractCache
 public:
     /** @short Constructor
 
-      Create new instance, using the @arg name as the name for the database connnection.
+      Create new instance, using the @arg name as the name for the database connection.
       Store all data into the @arg cacheDir directory. Actual opening of the DB connection
       is deferred till a call to the load() method.
     */
@@ -67,21 +67,22 @@ public:
     virtual SyncState mailboxSyncState(const QString &mailbox) const;
     virtual void setMailboxSyncState(const QString &mailbox, const SyncState &state);
 
-    virtual void setUidMapping(const QString &mailbox, const QList<uint> &seqToUid);
+    virtual void setUidMapping(const QString &mailbox, const Imap::Uids &seqToUid);
     virtual void clearUidMapping(const QString &mailbox);
-    virtual QList<uint> uidMapping(const QString &mailbox) const;
+    virtual Imap::Uids uidMapping(const QString &mailbox) const;
 
     virtual void clearAllMessages(const QString &mailbox);
-    virtual void clearMessage(const QString mailbox, uint uid);
+    virtual void clearMessage(const QString mailbox, const uint uid);
 
-    virtual MessageDataBundle messageMetadata(const QString &mailbox, uint uid) const;
-    virtual void setMessageMetadata(const QString &mailbox, uint uid, const MessageDataBundle &metadata);
+    virtual MessageDataBundle messageMetadata(const QString &mailbox, const uint uid) const;
+    virtual void setMessageMetadata(const QString &mailbox, const uint uid, const MessageDataBundle &metadata);
 
-    virtual QStringList msgFlags(const QString &mailbox, uint uid) const;
-    virtual void setMsgFlags(const QString &mailbox, uint uid, const QStringList &flags);
+    virtual QStringList msgFlags(const QString &mailbox, const uint uid) const;
+    virtual void setMsgFlags(const QString &mailbox, const uint uid, const QStringList &flags);
 
-    virtual QByteArray messagePart(const QString &mailbox, uint uid, const QString &partId) const;
-    virtual void setMsgPart(const QString &mailbox, uint uid, const QString &partId, const QByteArray &data);
+    virtual QByteArray messagePart(const QString &mailbox, const uint uid, const QByteArray &partId) const;
+    virtual void setMsgPart(const QString &mailbox, const uint uid, const QByteArray &partId, const QByteArray &data);
+    virtual void forgetMessagePart(const QString &mailbox, const uint uid, const QByteArray &partId);
 
     virtual QVector<Imap::Responses::ThreadingNode> messageThreading(const QString &mailbox);
     virtual void setMessageThreading(const QString &mailbox, const QVector<Imap::Responses::ThreadingNode> &threading);

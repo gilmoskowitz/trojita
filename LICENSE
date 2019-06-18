@@ -1,19 +1,49 @@
 This is Trojitá, Qt IMAP e-mail client
 
-Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
-
-Copyright (C) 2012 - 2013 Thomas Lübking <thomas.luebking@gmail.com>
+Copyright (C) 2006 - 2016 Jan Kundrát <jkt@kde.org>
+Copyright (C) 2012 - 2016 Thomas Lübking <thomas.luebking@gmail.com>
+Copyright (C) 2013 - 2015 Pavol Rohár <pali.rohar@gmail.com>
+Copyright (C) 2013 - 2015 Caspar Schutijser <caspar@schutijser.com>
+Copyright (C) 2013 - 2015 Stephan Platz <trojita@paalsteek.de>
+Copyright (C) 2014 - 2015 Lasse Liehu <lasse.liehu@gmail.com>
+Copyright (C) 2015 - 2016 Erik Quaeghebeur <trojita@equaeghe.nospammail.net>
+Copyright (C) 2015 Heiko Becker <heirecka@exherbo.org>
+Copyright (C) 2015 Safa Alfulaij <safa1996alfulaij@gmail.com>
+Copyright (C) 2015 Andreas Sturmlechner <andreas.sturmlechner@gmail.com>
+Copyright (C) 2014 - 2015 Marko Käning <mk-lists@email.de>
+Copyright (C) 2014 Illya Kovalevskyy <illya.kovalevskyy@gmail.com>
+Copyright (C) 2014 Toby Chen <chenyanjun912@hotmail.com>
+Copyright (C) 2014 Alexander Zabolotskikh <snprintfv@gmail.com>
+Copyright (C) 2014 Dimitrios Glentadakis <dglent@free.fr>
+Copyright (C) 2014 Michael Hall <mhall119@ubuntu.com>
+Copyright (C) 2014 Dan Chapman <dpniel@ubuntu.com>
+Copyright (C) 2014 Boren Zhang <bobo1993324@gmail.com>
+Copyright (C) 2014 Karan Luthra <karanluthra06@gmail.com>
+Copyright (C) 2014 Bruno Meneguele <bmeneguele@gmail.com>
+Copyright (C) 2013 - 2014 Jai Luthra <me@jailuthra.in>
+Copyright (C) 2014 Niklas Wenzel <nikwen.developer@gmail.com>
+Copyright (C) 2014 Pavel Sedlák <psedlak@redhat.com>
+Copyright (C) 2014 Luigi Toscano <luigi.toscano@tiscali.it>
+Copyright (C) 2013 Glad Deschrijver <glad.deschrijver@gmail.com>
+Copyright (C) 2014 Yazeed Zoabi <yazeedz.zoabi@gmail.com>
+Copyright (C) 2014 Danny Rimmer <utf8snowman@gmail.com>
+Copyright (C) 2014 Luke Dashjr <luke+trojita@dashjr.org>
+Copyright (C) 2012 - 2014 Yuri Chornoivan <yurchor@ukr.net>
+Copyright (C) 2013 Benjamin Kaiser <benjaminjkaiser@gmail.com>
+Copyright (C) 2012 - 2013 Peter Amidon <peter@picnicpark.org>
 Copyright (C) 2011 - 2012 Thomas Gahr <thomas.gahr@physik.uni-muenchen.de>
 Copyright (C) 2012 Shanti Bouchez <shanti@sogilis.com>
-Copyright (C) 2012 Peter Amidon <peter@picnicpark.org>
 Copyright (C) 2012 Mohammed Nafees <nafees.technocool@gmail.com>
-
+Copyright (C) 2013 Sreepriya Chalakkal <sreepriya1111@gmail.com>
+Copyright (C) 2013 Stefan Kögl <stefan.koegl@tu-dortmund.de>
+Copyright (C) 2013 James Turner <james@calminferno.net>
+Copyright (C) 2013 Mayank Jha <mjnovice@gmail.com>
+Copyright (C) 2013 André Marcelo Alvarenga <alvarenga@kde.org>
+Copyright (C) 2012 - 2013 Albert Astals Cid <aacid@kde.org>
+Copyright (C) 2012 - 2013 Ahmed Ibrahim Khalil <ahmedibrahimkhali@gmail.com>
 Copyright (C) 2010 - 2013 OpenMFG LLC, dba xTuple
 Copyright (C) 2013 Adrián Arroyo Calle <adrian.arroyocalle@gmail.com>
-Copyright (C) 2012 - 2013 Yuri Chornoivan <yurchor@ukr.net>
 Copyright (C) 2012 Allen Winter <allen.winter@kdab.com>
-Copyright (C) 2012 Ahmed Ibrahim <ahmedibrahimkhali@gmail.com>
-Copyright (C) 2012 Albert Astals Cid <aacid@kde.org>
 Copyright (C) 2012 Chusslove Illich (Часлав Илић) <caslav.ilic@gmx.net>
 Copyright (C) 2012 Michael Sprauer <Michael@Sprauer.net>
 Copyright (C) 2012 Chase Douglas <chase.douglas@canonical.com>
@@ -25,6 +55,14 @@ Copyright (C) 2011 Mariusz Fik <fisiu@opensuse.org>
 Copyright (C) 2011 Andrew Brouwers <abrouwers@gmail.com>
 Copyright (C) 2010 Benson Tsai <btsai@vrwarp.com>
 Copyright (C) 2009 Justin J <justin@jjamfd.com>
+Copyright (C) 2000 - 2001 Dawit Alemayehu <adawit@kde.org>
+Copyright (C) 2001 Rik Hemsley <rik@kde.org>
+Copyright (C) 2000 Sven Carstens <s.carstens@gmx.de>
+Copyright (C) 2010 Klarälvdalens Datakonsult AB, Stephen Kelly <stephen@kdab.com>
+Copyright (C) 2009 Stephen Kelly <steveire@gmail.com>
+Copyright (C) 2007 Trolltech ASA
+Copyright (C) 2009, 2010, 2012 Nokia Corporation and/or its subsidiary(-ies)
+Copyright (C) 2009 Witold Wysota <wysota@wysota.eu.org>
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License as

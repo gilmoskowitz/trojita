@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -20,20 +20,21 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef IMAP_SOCKETFACTORY_H
-#define IMAP_SOCKETFACTORY_H
+#ifndef STREAMS_SOCKETFACTORY_H
+#define STREAMS_SOCKETFACTORY_H
 
 #include <QPointer>
 #include <QStringList>
 #include "Socket.h"
 
-/** @short Namespace for IMAP interaction */
-namespace Imap
-{
+namespace Streams {
 
-/** @short Classes for handling of mailboxes and connections */
-namespace Mailbox
+/** @short Specify preference for Proxy Settings */
+enum class ProxySettings
 {
+    RespectSystemProxy, /**< @short Use System Proxy Settings to connect */
+    DirectConnect,      /**< @short Connect without using any Proxy Settings */
+};
 
 /** @short Abstract interface for creating new socket that is somehow connected
  * to the IMAP server */
@@ -46,13 +47,12 @@ public:
     virtual ~SocketFactory() {}
     /** @short Create new socket and return a smart pointer to it */
     virtual Socket *create() = 0;
+    virtual void setProxySettings(const Streams::ProxySettings proxySettings, const QString &protocolTag) = 0;
     void setStartTlsRequired(const bool doIt);
     bool startTlsRequired();
 signals:
     void error(const QString &);
 };
-
-typedef std::auto_ptr<SocketFactory> SocketFactoryPtr;
 
 /** @short Manufacture sockets based on QProcess */
 class ProcessSocketFactory: public SocketFactory
@@ -65,6 +65,7 @@ class ProcessSocketFactory: public SocketFactory
 public:
     ProcessSocketFactory(const QString &executable, const QStringList &args);
     virtual Socket *create();
+    virtual void setProxySettings(const Streams::ProxySettings proxySettings, const QString &protocolTag);
 };
 
 /** @short Manufacture sockets based on QSslSocket */
@@ -75,8 +76,13 @@ class SslSocketFactory: public SocketFactory
     QString host;
     /** @short Port number */
     quint16 port;
+    /** @short Specify Proxy Settings for connection */
+    ProxySettings m_proxySettings;
+    /** @short Protocol for the requested connection */
+    QString m_protocolTag;
 public:
     SslSocketFactory(const QString &host, const quint16 port);
+    virtual void setProxySettings(const Streams::ProxySettings proxySettings, const QString &protocolTag);
     virtual Socket *create();
 };
 
@@ -88,8 +94,13 @@ class TlsAbleSocketFactory: public SocketFactory
     QString host;
     /** @short Port number */
     quint16 port;
+    /** @short Specify Proxy Settings for connection */
+    ProxySettings m_proxySettings;
+    /** @short Protocol for the requested connection */
+    QString m_protocolTag;
 public:
     TlsAbleSocketFactory(const QString &host, const quint16 port);
+    virtual void setProxySettings(const Streams::ProxySettings proxySettings, const QString &protocolTag);
     virtual Socket *create();
 };
 
@@ -98,17 +109,18 @@ class FakeSocketFactory: public SocketFactory
 {
     Q_OBJECT
 public:
-    FakeSocketFactory();
+    explicit FakeSocketFactory(const Imap::ConnectionState initialState);
     virtual Socket *create();
     /** @short Return the last created socket */
     Socket *lastSocket();
+    void setInitialState(const Imap::ConnectionState initialState);
+    virtual void setProxySettings(const Streams::ProxySettings proxySettings, const QString &protocolTag);
+
 private:
     QPointer<Socket> m_last;
+    Imap::ConnectionState m_initialState;
 };
 
-
 }
 
-}
-
-#endif /* IMAP_SOCKETFACTORY_H */
+#endif

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -48,10 +48,12 @@ public:
     virtual bool needsMailbox() const {return false;}
 protected:
     void applyCachedStatus();
+    virtual void _failed(const QString &errorMessage);
 
     CommandHandle tag;
     ImapTask *conn;
     QPersistentModelIndex mailboxIndex;
+    bool mailboxIsRootMailbox;
     QList<Imap::Responses::Status*> m_pendingStatusResponses;
 };
 

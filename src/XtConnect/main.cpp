@@ -29,15 +29,19 @@
 #include <QCoreApplication>
 #include <QSettings>
 #include "XtConnect.h"
-#include "Common/SetCoreApplication.h"
+#include "AppVersion/SetCoreApplication.h"
+#include "Common/Application.h"
+#include "Common/MetaTypes.h"
 
 int main( int argc, char** argv) {
+    Common::registerMetaTypes();
     QCoreApplication app( argc, argv );
-    QCoreApplication::setApplicationName( QString::fromLatin1("xtconnect-trojita") );
-    Common::setCoreApplicationData();
-    QCoreApplication::setOrganizationDomain( QString::fromLatin1("xtuple.com") );
-    QCoreApplication::setOrganizationName( QString::fromLatin1("xtuple.com") );
-    QSettings s(QSettings::UserScope, QString::fromLatin1("xTuple.com"), QString::fromLatin1("xTuple"));
+    Common::Application::name = QLatin1String("xtconnect-trojita");
+    AppVersion::setGitVersion();
+    AppVersion::setCoreApplicationData();
+    QCoreApplication::setOrganizationDomain( QLatin1String("xtuple.com") );
+    QCoreApplication::setOrganizationName( QLatin1String("xtuple.com") );
+    QSettings s(QSettings::UserScope, QLatin1String("xTuple.com"), QLatin1String("xTuple"));
     XtConnect::XtConnect conn(0, &s);
     return app.exec();
 }

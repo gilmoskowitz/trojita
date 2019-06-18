@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -37,38 +37,19 @@ MailboxModel::MailboxModel(QObject *parent, Model *model): QAbstractProxyModel(p
     setSourceModel(model);
 
     // FIXME: will need to be expanded when Model supports more signals...
-    connect(model, SIGNAL(modelAboutToBeReset()), this, SLOT(handleModelAboutToBeReset()));
-    connect(model, SIGNAL(modelReset()), this, SLOT(handleModelReset()));
-    connect(model, SIGNAL(layoutAboutToBeChanged()), this, SIGNAL(layoutAboutToBeChanged()));
-    connect(model, SIGNAL(layoutChanged()), this, SIGNAL(layoutChanged()));
-    connect(model, SIGNAL(dataChanged(const QModelIndex &, const QModelIndex &)),
-            this, SLOT(handleDataChanged(const QModelIndex &, const QModelIndex &)));
-    connect(model, SIGNAL(rowsAboutToBeRemoved(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsAboutToBeRemoved(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(rowsRemoved(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsRemoved(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(rowsAboutToBeInserted(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsAboutToBeInserted(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(rowsInserted(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsInserted(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(messageCountPossiblyChanged(const QModelIndex &)),
-            this, SLOT(handleMessageCountPossiblyChanged(const QModelIndex &)));
-
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    // There's no virtual in Qt4.
-    setRoleNames(trojitaProxyRoleNames());
-#else
-    // In Qt5, the roleNames() is virtual and will work just fine.
-#endif
+    connect(model, &QAbstractItemModel::modelAboutToBeReset, this, &MailboxModel::handleModelAboutToBeReset);
+    connect(model, &QAbstractItemModel::modelReset, this, &MailboxModel::handleModelReset);
+    connect(model, &QAbstractItemModel::layoutAboutToBeChanged, this, &QAbstractItemModel::layoutAboutToBeChanged);
+    connect(model, &QAbstractItemModel::layoutChanged, this, &QAbstractItemModel::layoutChanged);
+    connect(model, &QAbstractItemModel::dataChanged, this, &MailboxModel::handleDataChanged);
+    connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this, &MailboxModel::handleRowsAboutToBeRemoved);
+    connect(model, &QAbstractItemModel::rowsRemoved, this, &MailboxModel::handleRowsRemoved);
+    connect(model, &QAbstractItemModel::rowsAboutToBeInserted, this, &MailboxModel::handleRowsAboutToBeInserted);
+    connect(model, &QAbstractItemModel::rowsInserted, this, &MailboxModel::handleRowsInserted);
+    connect(model, &Model::messageCountPossiblyChanged, this, &MailboxModel::handleMessageCountPossiblyChanged);
 }
 
-// The following code is pretty much a huge PITA. The handling of roleNames() has changed between Qt4 and Qt5 in a way which makes
-// it rather convoluted to support both in the same code base. Oh well.
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-QHash<int, QByteArray> MailboxModel::trojitaProxyRoleNames() const
-#else
 QHash<int, QByteArray> MailboxModel::roleNames() const
-#endif
 {
     static QHash<int, QByteArray> roleNames;
     if (roleNames.isEmpty()) {
@@ -76,7 +57,7 @@ QHash<int, QByteArray> MailboxModel::roleNames() const
         roleNames[RoleShortMailboxName] = "shortMailboxName";
         roleNames[RoleMailboxName] = "mailboxName";
         roleNames[RoleMailboxSeparator] = "mailboxSeparator";
-        roleNames[RoleMailboxHasChildmailboxes] = "mailboxHasChildMailboxes";
+        roleNames[RoleMailboxHasChildMailboxes] = "mailboxHasChildMailboxes";
         roleNames[RoleMailboxIsINBOX] = "mailboxIsINBOX";
         roleNames[RoleMailboxIsSelectable] = "mailboxIsSelectable";
         roleNames[RoleMailboxNumbersFetched] = "mailboxNumbersFetched";
@@ -253,7 +234,17 @@ Qt::DropActions MailboxModel::supportedDropActions() const
 
 QStringList MailboxModel::mimeTypes() const
 {
-    return QStringList() << QLatin1String("application/x-trojita-message-list");
+    return QStringList() << QStringLiteral("application/x-trojita-message-list");
+}
+
+bool MailboxModel::canDropMimeData(const QMimeData *data, Qt::DropAction action, int row, int column, const QModelIndex &parent) const
+{
+    // We cannot delegate this to QAbstractProxyModel::canDropMimeData because that code delegates the decision
+    // to the *source* model. That's bad, because our source model doesn't know anything about drag-and-drops
+    // or MIME types.
+    // However, calling the default implementation *at this level* of proxy chain makes sure that this proxy's
+    // mimeTypes() and supportedDropActions() gets consulted, which is the correct thing to do.
+    return QAbstractItemModel::canDropMimeData(data, action, row, column, parent);
 }
 
 bool MailboxModel::dropMimeData(const QMimeData *data, Qt::DropAction action,
@@ -275,7 +266,7 @@ bool MailboxModel::dropMimeData(const QMimeData *data, Qt::DropAction action,
     if (! target->isSelectable())
         return false;
 
-    QByteArray encodedData = data->data("application/x-trojita-message-list");
+    QByteArray encodedData = data->data(QStringLiteral("application/x-trojita-message-list"));
     QDataStream stream(&encodedData, QIODevice::ReadOnly);
 
     Q_ASSERT(! stream.atEnd());
@@ -294,7 +285,7 @@ bool MailboxModel::dropMimeData(const QMimeData *data, Qt::DropAction action,
         return false;
     }
 
-    QList<uint> uids;
+    Imap::Uids uids;
     stream >> uids;
 
     static_cast<Model *>(sourceModel())->copyMoveMessages(origMbox, target->mailbox(), uids,

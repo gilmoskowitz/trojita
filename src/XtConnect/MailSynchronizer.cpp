@@ -30,13 +30,13 @@
 #include <QDebug>
 #include "MailSynchronizer.h"
 #include "Imap/Model/ItemRoles.h"
-#include "MailboxFinder.h"
+#include "Imap/Model/MailboxFinder.h"
 #include "MessageDownloader.h"
 #include "SqlStorage.h"
 
 namespace XtConnect {
 
-MailSynchronizer::MailSynchronizer( QObject *parent, Imap::Mailbox::Model *model, MailboxFinder *finder, MessageDownloader *downloader, SqlStorage *storage ) :
+MailSynchronizer::MailSynchronizer( QObject *parent, Imap::Mailbox::Model *model, Imap::Mailbox::MailboxFinder *finder, MessageDownloader *downloader, SqlStorage *storage ) :
     QObject(parent), m_model(model), m_finder(finder), m_downloader(downloader), m_storage(storage)
 {
     Q_ASSERT(m_model);
@@ -154,7 +154,7 @@ void MailSynchronizer::slotMessageDataReady( const QModelIndex &message, const Q
                           QString::fromUtf8("Warning: unknown timestamp for UID %1 in %2 - using current one").arg(
                               message.data(Imap::Mailbox::RoleMessageUid).toString(),
                               message.parent().parent().data(Imap::Mailbox::RoleMailboxName).toString()));
-        dateTime = QDateTime::currentDateTime();
+        dateTime = QDateTime::currentDateTimeUtc();
     }
 
     quint64 emlId;

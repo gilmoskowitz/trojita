@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -30,30 +30,25 @@ namespace Mailbox
 
 void ModelWatcher::setModel(QAbstractItemModel *model)
 {
-    connect(model, SIGNAL(columnsAboutToBeInserted(const QModelIndex &, int, int)),
-            this, SLOT(columnsAboutToBeInserted(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(columnsAboutToBeRemoved(const QModelIndex &, int, int)),
-            this, SLOT(columnsAboutToBeRemoved(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(rowsAboutToBeInserted(const QModelIndex &, int, int)),
-            this, SLOT(rowsAboutToBeInserted(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(rowsAboutToBeRemoved(const QModelIndex &, int, int)),
-            this, SLOT(rowsAboutToBeRemoved(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(columnsInserted(const QModelIndex &, int, int)),
-            this, SLOT(columnsInserted(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(columnsRemoved(const QModelIndex &, int, int)),
-            this, SLOT(columnsRemoved(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(rowsInserted(const QModelIndex &, int, int)),
-            this, SLOT(rowsInserted(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(rowsRemoved(const QModelIndex &, int, int)),
-            this, SLOT(rowsRemoved(const QModelIndex &, int, int)));
-    connect(model, SIGNAL(dataChanged(const QModelIndex &, const QModelIndex &)),
-            this, SLOT(dataChanged(const QModelIndex &, const QModelIndex &)));
-    connect(model, SIGNAL(headerDataChanged(Qt::Orientation, int, int)),
-            this, SLOT(headerDataChanged(Qt::Orientation, int, int)));
-    connect(model, SIGNAL(layoutAboutToBeChanged()), this, SLOT(layoutAboutToBeChanged()));
-    connect(model, SIGNAL(layoutChanged()), this, SLOT(layoutChanged()));
-    connect(model, SIGNAL(modelAboutToBeReset()), this, SLOT(modelAboutToBeReset()));
-    connect(model, SIGNAL(modelReset()), this, SLOT(modelReset()));
+    connect(model, &QAbstractItemModel::columnsAboutToBeInserted, this, &ModelWatcher::columnsAboutToBeInserted);
+    connect(model, &QAbstractItemModel::columnsAboutToBeRemoved, this, &ModelWatcher::columnsAboutToBeRemoved);
+    connect(model, &QAbstractItemModel::rowsAboutToBeInserted, this, &ModelWatcher::rowsAboutToBeInserted);
+    connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this, &ModelWatcher::rowsAboutToBeRemoved);
+    connect(model, &QAbstractItemModel::columnsInserted, this, &ModelWatcher::columnsInserted);
+    connect(model, &QAbstractItemModel::columnsRemoved, this, &ModelWatcher::columnsRemoved);
+    connect(model, &QAbstractItemModel::rowsInserted, this, &ModelWatcher::rowsInserted);
+    connect(model, &QAbstractItemModel::rowsRemoved, this, &ModelWatcher::rowsRemoved);
+    connect(model, &QAbstractItemModel::dataChanged, this, &ModelWatcher::dataChanged);
+    connect(model, &QAbstractItemModel::headerDataChanged, this, &ModelWatcher::headerDataChanged);
+
+    connect(model, &QAbstractItemModel::rowsAboutToBeMoved, this, &ModelWatcher::rowsAboutToBeMoved);
+    connect(model, &QAbstractItemModel::rowsMoved, this, &ModelWatcher::rowsMoved);
+    connect(model, &QAbstractItemModel::columnsAboutToBeMoved, this, &ModelWatcher::columnsAboutToBeMoved);
+    connect(model, &QAbstractItemModel::columnsMoved, this, &ModelWatcher::columnsMoved);
+    connect(model, &QAbstractItemModel::layoutAboutToBeChanged, this, &ModelWatcher::layoutAboutToBeChanged);
+    connect(model, &QAbstractItemModel::layoutChanged, this, &ModelWatcher::layoutChanged);
+    connect(model, &QAbstractItemModel::modelAboutToBeReset, this, &ModelWatcher::modelAboutToBeReset);
+    connect(model, &QAbstractItemModel::modelReset, this, &ModelWatcher::modelReset);
 }
 
 void ModelWatcher::columnsAboutToBeInserted(const QModelIndex &parent, int start, int end)
@@ -124,6 +119,30 @@ void ModelWatcher::rowsInserted(const QModelIndex &parent, int start, int end)
 void ModelWatcher::rowsRemoved(const QModelIndex &parent, int start, int end)
 {
     qDebug() << sender()->objectName() << "rowsRemoved(" << parent << start << end << ")";
+}
+
+void ModelWatcher::rowsAboutToBeMoved(const QModelIndex &sourceParent, int sourceStart, int sourceEnd,
+                                      const QModelIndex &destinationParent, int destinationRow)
+{
+    qDebug() << sender()->objectName() << "rowsAboutToBeMoved" << sourceParent << sourceStart << sourceEnd <<
+                destinationParent << destinationRow;
+}
+
+void ModelWatcher::rowsMoved(const QModelIndex &parent, int start, int end, const QModelIndex &destination, int row)
+{
+    qDebug() << sender()->objectName() << "rowsMoved" << parent << start << end << destination << row;
+}
+
+void ModelWatcher::columnsAboutToBeMoved(const QModelIndex &sourceParent, int sourceStart, int sourceEnd,
+                                         const QModelIndex &destinationParent, int destinationColumn)
+{
+    qDebug() << sender()->objectName() << "columnsAboutToBeMoved" << sourceParent << sourceStart << sourceEnd <<
+                destinationParent << destinationColumn;
+}
+
+void ModelWatcher::columnsMoved(const QModelIndex &parent, int start, int end, const QModelIndex &destination, int column)
+{
+    qDebug() << sender()->objectName() << "columnsMoved" << parent << start << end << destination << column;
 }
 
 }

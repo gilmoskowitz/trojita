@@ -1,5 +1,5 @@
 
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -28,6 +28,7 @@
 #include <QWidget>
 #include "Common/FileLogger.h"
 #include "Common/RingBuffer.h"
+#include "Imap/ConnectionState.h"
 
 class QPushButton;
 class QTabWidget;
@@ -38,8 +39,15 @@ namespace Common {
 class FileLogger;
 }
 
-namespace Gui
-{
+namespace Gui {
+
+/** @short Widget (etc) for a single connection */
+struct ConnectionLog {
+    ConnectionLog();
+    QPlainTextEdit *widget;
+    Common::RingBuffer<Common::LogMessage> buffer;
+    qint64 closedTime;
+};
 
 /** @short Protocol chat logger
 
@@ -55,7 +63,9 @@ public:
 
 public slots:
     /** @short An IMAP model wants to log something */
-    void slotImapLogged(uint parser, Common::LogMessage message);
+    void slotImapLogged(uint parserId, Common::LogMessage message);
+
+    void onConnectionClosed(uint parserId, Imap::ConnectionState state);
 
     /** @short Enable/disable persistent logging */
     void slotSetPersistentLogging(const bool enabled);
@@ -69,17 +79,19 @@ private slots:
     /** @short Copy contents of all buffers into the GUI widgets */
     void slotShowLogs();
 
+signals:
+    void persistentLoggingChanged(const bool active);
+
 private:
     QTabWidget *tabs;
-    QMap<uint, QPlainTextEdit *> loggerWidgets;
-    QMap<uint, Common::RingBuffer<Common::LogMessage> > buffers;
+    QMap<uint, ConnectionLog> logs;
     QPushButton *clearAll;
     bool loggingActive;
     QTimer *delayedDisplay;
     Common::FileLogger *m_fileLogger;
 
     /** @short Return (possibly newly created) logger widget for a given parser */
-    QPlainTextEdit *getLogger(const uint parser);
+    QPlainTextEdit *getLogger(const uint parserId);
 
     /** @short Dump the log bufer contents to the GUI widget */
     void flushToWidget(const uint parserId, Common::RingBuffer<Common::LogMessage> &buf);

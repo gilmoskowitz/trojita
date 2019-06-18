@@ -18,7 +18,7 @@
 <?rfc sortrefs="yes" ?>
 <?rfc compact="yes" ?>
 <?rfc subcompact="no" ?>
-<rfc category="std" docName="draft-kundrat-incthread-00" ipr="trust200902">
+<rfc category="std" docName="draft-kundrat-incthread-02" ipr="trust200902">
 
   <front>
     <title abbrev="IMAP INCTHREAD Extension">IMAP Extension for Incremental Threading (INCTHREAD)</title>
@@ -35,7 +35,7 @@
       </address>
     </author>
 
-    <date year="2012" month="August" day="25"/>
+    <date year="2013" month="August" day="27"/>
 
     <area>General</area>
     <workgroup>Internet Engineering Task Force</workgroup>
@@ -167,12 +167,16 @@
                     <xref target="RFC5256"/>.  This return value is defined to allow clients to easily match data
                     received over network with the tag of the command which caused them, as per the usual ESEARCH
                     rules.</t>
+                <t>Due to the rules of <xref target="RFC4466"/>, the <xref target="RFC5256"/>-styled response is
+                    enclosed in one extra pair of parentheses when returned as ESEARCH data.  As an example, threading
+                    data (1)(2 3) are encoded as ((1)(2 3)) when sent in the THREAD ESEARCH response.</t>
             </section>
 
             <section title="The INCTHREAD ESEARCH Return Value">
                 <t>The INCTHREAD return value consists of "previous thread root UID" followed by "threading response
                     containing a single thread".  The UID of the previous thread root MUST be zero if the thread sorts
-                    first in the resulting list of threads.</t>
+                    first in the resulting list of threads.  The tuple is enclosed in parentheses to conform to <xref
+                        target="RFC4466"/>.</t>
 
                 <t>A dedicated INCTHREAD record MUST be present for each thread contained in the result set.</t>
 
@@ -186,20 +190,20 @@
                         thread is inserted just behind a thread whose root message has UID specified in the "uid"
                         argument of the INCTHREAD response.</t>
 
-                    <t>If the client supports incremental threading, the INCTHREAD responses MUST be processed in order.
-                        In particular, inserting the newly formed threads to a proper location shall happen immediately
-                        as the new thread is created as the subsequent responses COULD refer to the root message of the
-                        just-inserted thread.  If the UID is said to be zero (0), it is interpreted specially to mean
-                        that the newly formed thread is the very first one among the list of threads in the mailbox.</t>
-
-                    <t>If valid, the UID of the previous thread root message MUST refer to the previous thread in a
+                    <t>If non-zero, the UID of the previous thread root message MUST refer to the previous thread in a
                         mapping which contains all messages from a mailbox.  In particular, no matter what additional
                         searching criteria the client has used, the previous thread MUST always be identified without
-                        any search criteria being applied.  In future, this might be changed to allow for a subsequent
-                        search specification to accommodate clients working on a subset of messages.</t>
+                        any search criteria being applied.</t>
 
-                    <t>Servers MUST NOT send a number which does not refer to any thread root UID unless the number is 0
-                        to indicate the very first thread.</t>
+                    <t>If the client supports incremental threading, the INCTHREAD blocks of an ESEARCH response MUST be
+                        processed in order.  In particular, inserting the newly formed threads to a proper location
+                        shall happen immediately when the new thread is created because the subsequent responses COULD
+                        refer to the root message of the just-inserted thread.</t>
+
+                    <t>If the UID is said to be zero (0), it is interpreted specially to mean that the newly formed
+                        thread is the very first one among the list of threads in the mailbox.  Servers MUST NOT send a
+                        number which does not refer to any thread root UID unless the number is 0 to indicate the very
+                        first thread.</t>
 
                     <t>Clients MUST deal with servers sending a UID which does not refer to any thread root or any
                         message in the mailbox.  Is is implementation-defined at which position such thread shall be
@@ -233,8 +237,8 @@ S: * 666 FETCH (UID 1666 FLAGS ())
 S: x1 OK fetched
 C: x2 UID THREAD RETURN (INCTHREAD) REFS utf-8
       INTHREAD REFS 666
-S: * ESEARCH (TAG "x2") UID INCTHREAD 400
-      (600 601 (640 666)(602 603))
+S: * ESEARCH (TAG "x2") UID INCTHREAD (400
+      (600 601 (640 666)(602 603)))
 S: x2 OK sent]]></artwork>
             </figure>
 
@@ -266,7 +270,7 @@ S: x2 OK sent]]></artwork>
             <figure align="center">
                 <artwork align="left"><![CDATA[
 C: x1 UID THREAD (RETURN THREAD) REFS utf-8 ALL
-S: * ESEARCH (TAG "x2") UID THREAD (1)(2)(3)(4)
+S: * ESEARCH (TAG "x2") UID THREAD ((1)(2)(3)(4))
 S: x1 OK Threading sent]]></artwork>
             </figure>
 
@@ -285,7 +289,7 @@ S: x1 OK Threading sent]]></artwork>
 S: * 5 EXISTS
 S: * 5 FETCH (UID 5)
 C: x2 UID THREAD (RETURN INCTHREAD) REFS utf-8 INTHREAD REFS UID 5
-S: * ESEARCH (TAG "x2") UID INCTHREAD 2 (3 5)
+S: * ESEARCH (TAG "x2") UID INCTHREAD (2 (3 5))
 S: x2 OK Threading sent]]></artwork>
             </figure>
 
@@ -310,7 +314,7 @@ S: x2 OK Threading sent]]></artwork>
             <figure align="center">
                 <artwork align="left"><![CDATA[
 C: x1 UID THREAD (RETURN THREAD) REFS utf-8 ALL
-S: * ESEARCH (TAG "x2") UID THREAD (1 2)(3 4)(5)
+S: * ESEARCH (TAG "x2") UID THREAD ((1 2)(3 4)(5))
 S: x1 OK Threading sent]]></artwork>
             </figure>
 
@@ -330,7 +334,7 @@ S: x1 OK Threading sent]]></artwork>
 S: * 6 EXISTS
 S: * 6 FETCH (UID 6)
 C: x2 UID THREAD (RETURN INCTHREAD) REFS utf-8 INTHREAD REFS UID 6
-S: * ESEARCH (TAG "x2") UID INCTHREAD 0 (6 (1 2)(3 4))
+S: * ESEARCH (TAG "x2") UID INCTHREAD (0 (6 (1 2)(3 4)))
 S: x2 OK Threading sent]]></artwork>
             </figure>
            
@@ -342,7 +346,7 @@ S: x2 OK Threading sent]]></artwork>
  |   |   +-- 2
  |   +-- 3       <-- previous thread #2
  |       +-- 4
- +-- 5           <-- previous thread #3 remains a standalone thread]]></artwork>
+ +-- 5           <-- previous thread #3 remains as a standalone thread]]></artwork>
             </figure>
         </section>
 
@@ -380,10 +384,10 @@ modifier-incthread  = "INCTHREAD"
 thread-return-opt   = modifier-thread / modifier-incthread
     ;; Similar to <search-return-opt> from [RFC4466]
 
-ret-data-thread     = "THREAD" [SP 1*thread-list]
+ret-data-thread     = "THREAD" [SP "(" 1*thread-list ")" ]
     ;; <thread-list> from [RFC5256]
 
-ret-data-incthread  = "INCTHREAD" SP uid SP thread-list
+ret-data-incthread  = "INCTHREAD" SP "(" uid SP thread-list ")"
     ;; <uid> from [RFC3501]
     ;; <thread-list> from [RFC5256]
 
@@ -433,5 +437,20 @@ thread-return-opts  = SP "RETURN" SP "(" [thread-return-opt
     <references title="Informative References">
       &RFC5267;
     </references>
+
+    <section anchor="changelog" title="Changelog">
+        <section title="Changes in -02 since -01">
+            <t><list style="symbols">
+                <t>Enclose the ESEARCH response data in parentheses to conform with RFC4466.
+                   Thanks to Alexey Melnikov for his review.</t>
+            </list></t>
+        </section>
+        <section title="Changes in -01 since -00">
+            <t><list style="symbols">
+                <t>Added some clarifications that each INCTHREAD block MUST be processed immediately because the
+                    subsequent block might refer to its results</t>
+            </list></t>
+        </section>
+    </section>
   </back>
 </rfc>

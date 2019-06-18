@@ -165,7 +165,7 @@ void MessageDownloader::slotDataChanged( const QModelIndex &a, const QModelIndex
         return;
     }
 
-    QModelIndex message = Imap::Mailbox::Model::findMessageForItem( a );
+    QModelIndex message = a.data(Imap::Mailbox::RolePartMessageIndex).value<QModelIndex>();
     if ( ! message.isValid() ) {
 #ifdef DEBUG_PENDING_MESSAGES_2
         qDebug() << "MessageDownloader::slotDataChanged: message not valid" << a;

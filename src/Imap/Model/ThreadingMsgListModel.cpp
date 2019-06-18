@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,12 +24,16 @@
 #include <algorithm>
 #include <QBuffer>
 #include <QDebug>
+#include "Imap/Tasks/SortTask.h"
+#include "Imap/Tasks/ThreadTask.h"
 #include "ItemRoles.h"
 #include "MailboxTree.h"
 #include "MsgListModel.h"
-#include "QAIM_reset.h"
-#include "SortTask.h"
-#include "ThreadTask.h"
+
+namespace {
+    /** @short Preallocate a bit more space in the hashmaps for future new arrivals */
+    const int headroomForNewmessages = 1000;
+}
 
 #if 0
 namespace
@@ -60,25 +64,30 @@ namespace Mailbox
 ThreadingMsgListModel::ThreadingMsgListModel(QObject *parent):
     QAbstractProxyModel(parent), threadingHelperLastId(0), modelResetInProgress(false), threadingInFlight(false),
     m_shallBeThreading(false), m_sortTask(0), m_sortReverse(false), m_currentSortingCriteria(SORT_NONE),
-    m_searchValidity(SEARCH_RESULT_INVALIDATED)
+    m_searchValidity(RESULT_INVALIDATED)
 {
+    m_delayedPrune = new QTimer(this);
+    m_delayedPrune->setSingleShot(true);
+    m_delayedPrune->setInterval(0);
+    connect(m_delayedPrune, &QTimer::timeout, this, &ThreadingMsgListModel::delayedPrune);
 }
 
 void ThreadingMsgListModel::setSourceModel(QAbstractItemModel *sourceModel)
 {
+    beginResetModel();
     threading.clear();
     ptrToInternal.clear();
     unknownUids.clear();
     threadedRootIds.clear();
     m_currentSortResult.clear();
-    m_searchValidity = SEARCH_RESULT_INVALIDATED;
+    m_searchValidity = RESULT_INVALIDATED;
 
     if (this->sourceModel()) {
         // there's already something, so take care to disconnect all signals
         this->sourceModel()->disconnect(this);
     }
 
-    RESET_MODEL;
+    endResetModel();
 
     if (!sourceModel)
         return;
@@ -88,19 +97,14 @@ void ThreadingMsgListModel::setSourceModel(QAbstractItemModel *sourceModel)
     QAbstractProxyModel::setSourceModel(msgList);
 
     // FIXME: will need to be expanded when Model supports more signals...
-    connect(sourceModel, SIGNAL(modelReset()), this, SLOT(resetMe()));
-    connect(sourceModel, SIGNAL(layoutAboutToBeChanged()), this, SIGNAL(layoutAboutToBeChanged()));
-    connect(sourceModel, SIGNAL(layoutChanged()), this, SIGNAL(layoutChanged()));
-    connect(sourceModel, SIGNAL(dataChanged(const QModelIndex &, const QModelIndex &)),
-            this, SLOT(handleDataChanged(const QModelIndex &, const QModelIndex &)));
-    connect(sourceModel, SIGNAL(rowsAboutToBeRemoved(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsAboutToBeRemoved(const QModelIndex &, int,int)));
-    connect(sourceModel, SIGNAL(rowsRemoved(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsRemoved(const QModelIndex &, int,int)));
-    connect(sourceModel, SIGNAL(rowsAboutToBeInserted(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsAboutToBeInserted(const QModelIndex &, int,int)));
-    connect(sourceModel, SIGNAL(rowsInserted(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsInserted(const QModelIndex &, int,int)));
+    connect(sourceModel, &QAbstractItemModel::modelReset, this, &ThreadingMsgListModel::resetMe);
+    connect(sourceModel, &QAbstractItemModel::layoutAboutToBeChanged, this, &QAbstractItemModel::layoutAboutToBeChanged);
+    connect(sourceModel, &QAbstractItemModel::layoutChanged, this, &QAbstractItemModel::layoutChanged);
+    connect(sourceModel, &QAbstractItemModel::dataChanged, this, &ThreadingMsgListModel::handleDataChanged);
+    connect(sourceModel, &QAbstractItemModel::rowsAboutToBeRemoved, this, &ThreadingMsgListModel::handleRowsAboutToBeRemoved);
+    connect(sourceModel, &QAbstractItemModel::rowsRemoved, this, &ThreadingMsgListModel::handleRowsRemoved);
+    connect(sourceModel, &QAbstractItemModel::rowsAboutToBeInserted, this, &ThreadingMsgListModel::handleRowsAboutToBeInserted);
+    connect(sourceModel, &QAbstractItemModel::rowsInserted, this, &ThreadingMsgListModel::handleRowsInserted);
     resetMe();
 }
 
@@ -135,7 +139,15 @@ void ThreadingMsgListModel::handleDataChanged(const QModelIndex &topLeft, const 
         emit dataChanged(rootCandidate, rootCandidate.sibling(rootCandidate.row(), bottomRight.column()));
     }
 
-    QSet<TreeItem*>::iterator persistent = unknownUids.find(static_cast<TreeItem*>(topLeft.internalPointer()));
+    auto message = dynamic_cast<TreeItemMessage*>(static_cast<TreeItemMessage*>(topLeft.internalPointer()));
+    Q_ASSERT(message);
+    if (message->uid() == 0) {
+        // UID is not yet known.
+        // This is a legal situation, for example when an unsolicited FETCH FLAGS arrives and there's no UID in there.
+        return;
+    }
+
+    QSet<TreeItem*>::iterator persistent = unknownUids.find(message);
     if (persistent != unknownUids.end()) {
         // The message wasn't fully synced before, and now it is
         persistent = unknownUids.erase(persistent);
@@ -314,8 +326,8 @@ Qt::ItemFlags ThreadingMsgListModel::flags(const QModelIndex &index) const
 
     QHash<uint,ThreadNodeInfo>::const_iterator it = threading.constFind(index.internalId());
     Q_ASSERT(it != threading.constEnd());
-    if (it->ptr)
-        return QAbstractProxyModel::flags(index);
+    if (it->ptr && it->uid)
+        return Qt::ItemIsSelectable | Qt::ItemIsDragEnabled | Qt::ItemIsEnabled;
 
     return Qt::NoItemFlags;
 
@@ -343,20 +355,21 @@ void ThreadingMsgListModel::handleRowsAboutToBeRemoved(const QModelIndex &parent
         it->uid = 0;
         it->ptr = 0;
     }
-    emit layoutAboutToBeChanged();
-    updatePersistentIndexesPhase1();
 }
 
 void ThreadingMsgListModel::handleRowsRemoved(const QModelIndex &parent, int start, int end)
 {
     Q_ASSERT(!parent.isValid());
-
     Q_UNUSED(start);
     Q_UNUSED(end);
+    if (!m_delayedPrune->isActive())
+        m_delayedPrune->start();
+}
 
-    // It looks like this simplified approach won't really fly when model starts to issue interleaved rowsRemoved signals,
-    // as we'll just remove everything upon first rowsRemoved.  I'll just hope that it doesn't matter (much).
-
+void ThreadingMsgListModel::delayedPrune()
+{
+    emit layoutAboutToBeChanged();
+    updatePersistentIndexesPhase1();
     pruneTree();
     updatePersistentIndexesPhase2();
     emit layoutChanged();
@@ -396,8 +409,8 @@ void ThreadingMsgListModel::handleRowsInserted(const QModelIndex &parent, int st
 
     if (!m_sortTask || !m_sortTask->isPersistent()) {
         m_currentSortResult.clear();
-        if (m_searchValidity == SEARCH_RESULT_FRESH)
-            m_searchValidity = SEARCH_RESULT_INVALIDATED;
+        if (m_searchValidity == RESULT_FRESH)
+            m_searchValidity = RESULT_INVALIDATED;
     }
 
     if (m_shallBeThreading)
@@ -410,19 +423,20 @@ void ThreadingMsgListModel::resetMe()
     if (modelResetInProgress)
         return;
 
+    beginResetModel();
     modelResetInProgress = true;
     threading.clear();
     ptrToInternal.clear();
     unknownUids.clear();
     threadedRootIds.clear();
     m_currentSortResult.clear();
-    m_searchValidity = SEARCH_RESULT_INVALIDATED;
-    RESET_MODEL;
+    m_searchValidity = RESULT_INVALIDATED;
+    endResetModel();
     updateNoThreading();
     modelResetInProgress = false;
-
-    if (m_shallBeThreading)
-        wantThreading();
+    // Refresh the sorting/searching/threading preferences.
+    // This is important, otherwise we won't track threading and/or the sort direction after e.g. changing a mailbox.
+    wantThreading();
 }
 
 void ThreadingMsgListModel::updateNoThreading()
@@ -466,6 +480,9 @@ void ThreadingMsgListModel::updateNoThreading()
         TreeItemMsgList *list = dynamic_cast<TreeItemMsgList *>(firstMessagePtr->parent());
         Q_ASSERT(list);
 
+        newThreading.reserve(upstreamMessages + headroomForNewmessages);
+        newPtrToInternal.reserve(upstreamMessages + headroomForNewmessages);
+
         for (int i = 0; i < upstreamMessages; ++i) {
             TreeItemMessage *ptr = static_cast<TreeItemMessage*>(list->m_children[i]);
             Q_ASSERT(ptr);
@@ -508,7 +525,7 @@ void ThreadingMsgListModel::wantThreading(const SkipSortSearch skipSortSearch)
     if (threadingInFlight) {
         // Imagine the following scenario:
         // <<< "* 3 EXISTS"
-        // Message 2 has unkown UID
+        // Message 2 has unknown UID
         // >>> "y4 UID FETCH 66:* (FLAGS)"
         // >>> "y5 UID THREAD REFS utf-8 ALL"
         // <<< "* 3 FETCH (UID 66 FLAGS ())"
@@ -544,7 +561,7 @@ void ThreadingMsgListModel::wantThreading(const SkipSortSearch skipSortSearch)
     uint highestUidInMailbox = findHighestUidInMailbox(list);
     uint highestUidInThreadingLowerBound = findHighEnoughNumber(mapping, highestUidInMailbox);
 
-    logTrace(QString::fromUtf8("ThreadingMsgListModel::wantThreading: THREAD contains info about UID %1 (or higher), mailbox has %2")
+    logTrace(QStringLiteral("ThreadingMsgListModel::wantThreading: THREAD contains info about UID %1 (or higher), mailbox has %2")
              .arg(QString::number(highestUidInThreadingLowerBound), QString::number(highestUidInMailbox)));
 
     if (highestUidInThreadingLowerBound >= highestUidInMailbox) {
@@ -553,8 +570,7 @@ void ThreadingMsgListModel::wantThreading(const SkipSortSearch skipSortSearch)
     } else {
         // There's apparently at least one known UID whose threading info we do not know; that means that we have to ask the
         // server here.
-        QList<TreeItem*>::iterator roughlyLastKnown =
-                const_cast<Model*>(realModel)->findMessageOrNextOneByUid(list, highestUidInThreadingLowerBound);
+        auto roughlyLastKnown = const_cast<Model*>(realModel)->findMessageOrNextOneByUid(list, highestUidInThreadingLowerBound);
         if (list->m_children.end() - roughlyLastKnown >= 50 || roughlyLastKnown == list->m_children.begin()) {
             askForThreading();
         } else {
@@ -615,38 +631,35 @@ void ThreadingMsgListModel::askForThreading(const uint firstUnknownUid)
     Imap::Mailbox::Model::realTreeItem(someMessage, &realModel, &realIndex);
     QModelIndex mailboxIndex = realIndex.parent().parent();
 
-    if (realModel->capabilities().contains(QLatin1String("THREAD=REFS"))) {
+    if (realModel->capabilities().contains(QStringLiteral("THREAD=REFS"))) {
         requestedAlgorithm = "REFS";
-    } else if (realModel->capabilities().contains(QLatin1String("THREAD=REFERENCES"))) {
+    } else if (realModel->capabilities().contains(QStringLiteral("THREAD=REFERENCES"))) {
         requestedAlgorithm = "REFERENCES";
-    } else if (realModel->capabilities().contains(QLatin1String("THREAD=ORDEREDSUBJECT"))) {
+    } else if (realModel->capabilities().contains(QStringLiteral("THREAD=ORDEREDSUBJECT"))) {
         requestedAlgorithm = "ORDEREDSUBJECT";
     }
 
     if (! requestedAlgorithm.isEmpty()) {
         threadingInFlight = true;
-        ThreadTask *threadTask;
-        if (firstUnknownUid && realModel->capabilities().contains(QLatin1String("INCTHREAD"))) {
-            threadTask = realModel->m_taskFactory->
+        if (firstUnknownUid && realModel->capabilities().contains(QStringLiteral("INCTHREAD"))) {
+            auto threadTask = realModel->m_taskFactory->
                     createIncrementalThreadTask(const_cast<Model *>(realModel), mailboxIndex, requestedAlgorithm,
-                                                                    QStringList() << "INTHREAD" << requestedAlgorithm << "UID" <<
-                                                                        Sequence::startingAt(firstUnknownUid).toByteArray());
-            connect(threadTask, SIGNAL(incrementalThreadingAvailable(Responses::ESearch::IncrementalThreadingData_t)),
-                    this, SLOT(slotIncrementalThreadingAvailable(Responses::ESearch::IncrementalThreadingData_t)));
-            connect(threadTask, SIGNAL(failed(QString)), this, SLOT(slotIncrementalThreadingFailed()));
+                                                                    QStringList() << QStringLiteral("INTHREAD") << QString::fromUtf8(requestedAlgorithm) << QStringLiteral("UID") <<
+                                                                        QString::fromUtf8(Sequence::startingAt(firstUnknownUid).toByteArray()));
+            connect(threadTask, &ThreadTask::incrementalThreadingAvailable,
+                    this, &ThreadingMsgListModel::slotIncrementalThreadingAvailable);
+            connect(threadTask, &ImapTask::failed, this, &ThreadingMsgListModel::slotIncrementalThreadingFailed);
         } else {
-            threadTask = realModel->m_taskFactory->createThreadTask(const_cast<Model *>(realModel), mailboxIndex,
-                                                                    requestedAlgorithm, QStringList() << QLatin1String("ALL"));
-            connect(realModel, SIGNAL(threadingAvailable(QModelIndex,QByteArray,QStringList,QVector<Imap::Responses::ThreadingNode>)),
-                    this, SLOT(slotThreadingAvailable(QModelIndex,QByteArray,QStringList,QVector<Imap::Responses::ThreadingNode>)));
-            connect(realModel, SIGNAL(threadingFailed(QModelIndex,QByteArray,QStringList)),
-                    this, SLOT(slotThreadingFailed(QModelIndex,QByteArray,QStringList)));
+            realModel->m_taskFactory->createThreadTask(const_cast<Model *>(realModel), mailboxIndex,
+                                                       requestedAlgorithm, QStringList() << QStringLiteral("ALL"));
+            connect(realModel, &Model::threadingAvailable, this, &ThreadingMsgListModel::slotThreadingAvailable);
+            connect(realModel, &Model::threadingFailed, this, &ThreadingMsgListModel::slotThreadingFailed);
         }
     }
 }
 
 /** @short Gather all UIDs present in the mapping and push them into the "uids" vector */
-static void gatherAllUidsFromThreadNode(QVector<uint> &uids, const QVector<Responses::ThreadingNode> &list)
+static void gatherAllUidsFromThreadNode(Imap::Uids &uids, const QVector<Responses::ThreadingNode> &list)
 {
     for (QVector<Responses::ThreadingNode>::const_iterator it = list.constBegin(); it != list.constEnd(); ++it) {
         uids.push_back(it->num);
@@ -666,13 +679,13 @@ void ThreadingMsgListModel::slotIncrementalThreadingAvailable(const Responses::E
     Q_ASSERT(mailboxIndex.isValid());
 
     // First phase: remove all messages mentioned in the incremental responses from their original placement
-    QVector<uint> affectedUids;
+    Imap::Uids affectedUids;
     for (Responses::ESearch::IncrementalThreadingData_t::const_iterator it = data.constBegin(); it != data.constEnd(); ++it) {
         gatherAllUidsFromThreadNode(affectedUids, it->thread);
     }
     qSort(affectedUids);
     QList<TreeItemMessage*> affectedMessages = const_cast<Model*>(realModel)->
-            findMessagesByUids(static_cast<TreeItemMailbox*>(mailboxIndex.internalPointer()), affectedUids.toList());
+            findMessagesByUids(static_cast<TreeItemMailbox*>(mailboxIndex.internalPointer()), affectedUids);
     QHash<uint,void *> uidToPtrCache;
 
 
@@ -733,7 +746,7 @@ bool ThreadingMsgListModel::shouldIgnoreThisThreadingResponse(const QModelIndex 
     }
 
     if (algorithm != requestedAlgorithm) {
-        logTrace(QString::fromUtf8("Weird, asked for threading via %1 but got %2 instead -- ignoring")
+        logTrace(QStringLiteral("Weird, asked for threading via %1 but got %2 instead -- ignoring")
                  .arg(QString::fromUtf8(requestedAlgorithm), QString::fromUtf8(algorithm)));
         return true;
     }
@@ -741,8 +754,8 @@ bool ThreadingMsgListModel::shouldIgnoreThisThreadingResponse(const QModelIndex 
     if (searchCriteria.size() != 1 || searchCriteria.front() != QLatin1String("ALL")) {
         QString buf;
         QTextStream ss(&buf);
-        logTrace(QString::fromUtf8("Weird, requesting messages matching ALL, but got this instead: %1")
-                 .arg(searchCriteria.join(QLatin1String(", "))));
+        logTrace(QStringLiteral("Weird, requesting messages matching ALL, but got this instead: %1")
+                 .arg(searchCriteria.join(QStringLiteral(", "))));
         return true;
     }
 
@@ -759,10 +772,10 @@ void ThreadingMsgListModel::slotThreadingFailed(const QModelIndex &mailbox, cons
     if (shouldIgnoreThisThreadingResponse(mailbox, algorithm, searchCriteria))
         return;
 
-    disconnect(sender(), 0, this,
-               SLOT(slotThreadingAvailable(QModelIndex,QByteArray,QStringList,QVector<Imap::Responses::ThreadingNode>)));
-    disconnect(sender(), 0, this,
-               SLOT(slotThreadingFailed(QModelIndex,QByteArray,QStringList)));
+    auto model = qobject_cast<Model*>(sender());
+    Q_ASSERT(model);
+    disconnect(model, &Model::threadingAvailable, this, &ThreadingMsgListModel::slotThreadingAvailable);
+    disconnect(model, &Model::threadingFailed, this, &ThreadingMsgListModel::slotThreadingFailed);
 
     updateNoThreading();
 }
@@ -778,10 +791,9 @@ void ThreadingMsgListModel::slotThreadingAvailable(const QModelIndex &mailbox, c
     if (shouldIgnoreThisThreadingResponse(mailbox, algorithm, searchCriteria, &model))
         return;
 
-    disconnect(sender(), 0, this,
-               SLOT(slotThreadingAvailable(QModelIndex,QByteArray,QStringList,QVector<Imap::Responses::ThreadingNode>)));
-    disconnect(sender(), 0, this,
-               SLOT(slotThreadingFailed(QModelIndex,QByteArray,QStringList)));
+    Q_ASSERT(model);
+    disconnect(model, &Model::threadingAvailable, this, &ThreadingMsgListModel::slotThreadingAvailable);
+    disconnect(model, &Model::threadingFailed, this, &ThreadingMsgListModel::slotThreadingFailed);
 
     model->cache()->setMessageThreading(mailbox.data(RoleMailboxName).toString(), mapping);
 
@@ -791,27 +803,27 @@ void ThreadingMsgListModel::slotThreadingAvailable(const QModelIndex &mailbox, c
         wantThreading();
 }
 
-void ThreadingMsgListModel::slotSortingAvailable(const QList<uint> &uids)
+void ThreadingMsgListModel::slotSortingAvailable(const Imap::Uids &uids)
 {
     if (!m_sortTask->isPersistent()) {
-        disconnect(m_sortTask, 0, this, SLOT(slotSortingAvailable(QList<uint>)));
-        disconnect(m_sortTask, 0, this, SLOT(slotSortingFailed()));
-        disconnect(m_sortTask, 0, this, SLOT(slotSortingIncrementalUpdate(Imap::Responses::ESearch::IncrementalContextData_t)));
+        disconnect(m_sortTask.data(), &SortTask::sortingAvailable, this, &ThreadingMsgListModel::slotSortingAvailable);
+        disconnect(m_sortTask.data(), &SortTask::sortingFailed, this, &ThreadingMsgListModel::slotSortingFailed);
+        disconnect(m_sortTask.data(), &SortTask::incrementalSortUpdate, this, &ThreadingMsgListModel::slotSortingIncrementalUpdate);
 
         m_sortTask = 0;
     }
 
     m_currentSortResult = uids;
-    if (m_searchValidity == SEARCH_RESULT_ASKED)
-        m_searchValidity = SEARCH_RESULT_FRESH;
+    if (m_searchValidity == RESULT_ASKED)
+        m_searchValidity = RESULT_FRESH;
     wantThreading();
 }
 
 void ThreadingMsgListModel::slotSortingFailed()
 {
-    disconnect(m_sortTask, 0, this, SLOT(slotSortingAvailable(QList<uint>)));
-    disconnect(m_sortTask, 0, this, SLOT(slotSortingFailed()));
-    disconnect(m_sortTask, 0, this, SLOT(slotSortingIncrementalUpdate(Imap::Responses::ESearch::IncrementalContextData_t)));
+    disconnect(m_sortTask.data(), &SortTask::sortingAvailable, this, &ThreadingMsgListModel::slotSortingAvailable);
+    disconnect(m_sortTask.data(), &SortTask::sortingFailed, this, &ThreadingMsgListModel::slotSortingFailed);
+    disconnect(m_sortTask.data(), &SortTask::incrementalSortUpdate, this, &ThreadingMsgListModel::slotSortingIncrementalUpdate);
 
     m_sortTask = 0;
     m_sortReverse = false;
@@ -826,8 +838,15 @@ void ThreadingMsgListModel::slotSortingIncrementalUpdate(const Responses::ESearc
         switch (it->modification) {
         case Responses::ESearch::ContextIncrementalItem::ADDTO:
             for (int i = 0; i < it->uids.size(); ++i)  {
-                int offset = it->offset + i;
-                if (offset < 0 || offset >= m_currentSortResult.size()) {
+                int offset;
+                if (it->offset == 0) {
+                    // FIXME: use mailbox order later on
+                    offset = 0;
+                } else {
+                    // IMAP uses one-based indexing, we use zero-based offsets
+                    offset = it->offset + i - 1;
+                }
+                if (offset < 0 || offset > m_currentSortResult.size()) {
                     throw MailboxException("ESEARCH: ADDTO out of bounds");
                 }
                 m_currentSortResult.insert(offset, it->uids[i]);
@@ -838,7 +857,11 @@ void ThreadingMsgListModel::slotSortingIncrementalUpdate(const Responses::ESearc
             for (int i = 0; i < it->uids.size(); ++i)  {
                 if (it->offset == 0) {
                     // When the offset is not given, we have to find it ourselves
-                    m_currentSortResult.removeOne(it->uids[i]);
+                    auto item = std::find(m_currentSortResult.begin(), m_currentSortResult.end(), it->uids[i]);
+                    if (item == m_currentSortResult.end()) {
+                        throw MailboxException("ESEARCH: there's no such UID");
+                    }
+                    m_currentSortResult.erase(item);
                 } else {
                     // We're given an offset, so let's make sure it is a correct one
                     int offset = it->offset + i - 1;
@@ -848,13 +871,13 @@ void ThreadingMsgListModel::slotSortingIncrementalUpdate(const Responses::ESearc
                     if (m_currentSortResult[offset] != it->uids[i]) {
                         throw MailboxException("ESEARCH: REMOVEFROM UID mismatch");
                     }
-                    m_currentSortResult.removeAt(offset);
+                    m_currentSortResult.remove(offset);
                 }
             }
             break;
         }
     }
-    m_searchValidity = SEARCH_RESULT_FRESH;
+    m_searchValidity = RESULT_FRESH;
     wantThreading();
 }
 
@@ -862,9 +885,7 @@ void ThreadingMsgListModel::slotSortingIncrementalUpdate(const Responses::ESearc
 void ThreadingMsgListModel::calculateNullSort()
 {
     m_currentSortResult.clear();
-#if QT_VERSION >= 0x040700
-    m_currentSortResult.reserve(threadedRootIds.size());
-#endif
+    m_currentSortResult.reserve(threadedRootIds.size() + headroomForNewmessages);
     Q_FOREACH(const uint internalId, threadedRootIds) {
         QHash<uint,ThreadNodeInfo>::const_iterator it = threading.constFind(internalId);
         if (it == threading.constEnd())
@@ -872,14 +893,14 @@ void ThreadingMsgListModel::calculateNullSort()
         if (it->uid)
             m_currentSortResult.append(it->uid);
     }
-    m_searchValidity = SEARCH_RESULT_FRESH;
+    m_searchValidity = RESULT_FRESH;
 }
 
 void ThreadingMsgListModel::applyThreading(const QVector<Imap::Responses::ThreadingNode> &mapping)
 {
     if (! unknownUids.isEmpty()) {
         // Some messages have UID zero, which means that they weren't loaded yet. Too bad.
-        logTrace(QString::fromUtf8("%1 messages have 0 UID").arg(unknownUids.size()));
+        logTrace(QStringLiteral("%1 messages have 0 UID").arg(unknownUids.size()));
         return;
     }
 
@@ -898,9 +919,9 @@ void ThreadingMsgListModel::applyThreading(const QVector<Imap::Responses::Thread
     int upstreamMessages = sourceModel()->rowCount();
     QHash<uint,void *> uidToPtrCache;
     QSet<uint> usedNodes;
-    uidToPtrCache.reserve(upstreamMessages);
-    threading.reserve(upstreamMessages);
-    ptrToInternal.reserve(upstreamMessages);
+    uidToPtrCache.reserve(upstreamMessages + headroomForNewmessages);
+    threading.reserve(upstreamMessages + headroomForNewmessages);
+    ptrToInternal.reserve(upstreamMessages + headroomForNewmessages);
 
     if (upstreamMessages) {
         // Work with pointers instead going through the MVC API for performance.
@@ -964,7 +985,15 @@ void ThreadingMsgListModel::registerThreading(const QVector<Imap::Responses::Thr
 {
     Q_FOREACH(const Imap::Responses::ThreadingNode &node, mapping) {
         uint nodeId;
-        if (node.num == 0) {
+        QHash<uint,void *>::const_iterator ptrIt;
+        if (node.num == 0 ||
+                (ptrIt = uidToPtr.find(node.num)) == uidToPtr.constEnd()) {
+            // Either this is an empty node, or the THREAD response references a UID which is no longer in the mailbox.
+            // This is a valid scenario; it can happen e.g. when reusing data from cache, or when a message got
+            // expunged after the untagged THREAD was received, but before the tagged OK.
+            // We cannot just ignore this node, though, because it might have some children which we would otherwise
+            // simply hide.
+            // The ptrIt which is initialized by the condition is used in the else branch.
             ThreadNodeInfo fake;
             fake.internalId = ++threadingHelperLastId;
             fake.parent = parentId;
@@ -973,16 +1002,6 @@ void ThreadingMsgListModel::registerThreading(const QVector<Imap::Responses::Thr
             threading[ fake.internalId ] = fake;
             nodeId = fake.internalId;
         } else {
-            QHash<uint,void *>::const_iterator ptrIt = uidToPtr.find(node.num);
-            if (ptrIt == uidToPtr.constEnd()) {
-                logTrace(QString::fromUtf8("The THREAD response references a message with UID %1, which is not recognized "
-                                            "at this point. More information is available in the IMAP protocol log.")
-                         .arg(node.num));
-                // It's possible that the THREAD response came from cache; in that case, it isn't pretty, but completely harmless
-                // FIXME: it'd be great to be able to distinguish between data sent by the IMAP server and a stale cache...
-                continue;
-            }
-
             QHash<void *,uint>::const_iterator nodeIt = ptrToInternal.constFind(*ptrIt);
             // The following assert would fail if there was a node with a valid UID, but not in our ptrToInternal mapping.
             // That is however non-issue, as we pre-create nodes for all messages beforehand.
@@ -1054,6 +1073,10 @@ void ThreadingMsgListModel::pruneTree()
     // directly, we'd hit an issue with iterator ordering (basically, we want to be able to say "hey, I don't care at which point
     // of the iteration I'm right now, the next node to process should be that one, and then we should resume with the rest").
     QList<uint> pending = threading.keys();
+
+    // These are the parents whose children will have to be renumbered later on
+    QSet<uint> parentsForRenumbering;
+
     for (QList<uint>::iterator id = pending.begin(); id != pending.end(); /* nothing */) {
         // Convert to the hashmap
         // The "it" iterator point to the current node in the threading mapping
@@ -1082,35 +1105,33 @@ void ThreadingMsgListModel::pruneTree()
             // and the node itself has to be found in its parent's children
             QList<uint>::iterator childIt = qFind(parent->children.begin(), parent->children.end(), it->internalId);
             Q_ASSERT(childIt != parent->children.end());
-            // Check that its offset is correct
-            Q_ASSERT(childIt - parent->children.begin() == it->offset);
+            // The offset of this child might no longer be correct, though -- we're postponing the actual deletion until later
 
             if (it->children.isEmpty()) {
                 // This is a leaf node, so we can just remove it
                 childIt = parent->children.erase(childIt);
-                threadedRootIds.removeOne(it->internalId);
+                // We do not perform the renumbering immediately, that would lead to an O(n^2) performance when deleting nodes.
+                parentsForRenumbering.insert(it->parent);
+                parentsForRenumbering.remove(it->internalId);
+
+                if (it->parent == 0) {
+                    threadedRootIds.removeOne(it->internalId);
+                }
                 threading.erase(it);
                 ++id;
 
-                // Update offsets of all further nodes, siblings to the one we've just deleted
-                while (childIt != parent->children.end()) {
-                    QHash<uint, ThreadNodeInfo>::iterator sibling = threading.find(*childIt);
-                    Q_ASSERT(sibling != threading.end());
-                    --sibling->offset;
-                    Q_ASSERT(sibling->offset >= 0);
-                    ++childIt;
-                }
             } else {
                 // This node has some children, so we can't just delete it. Instead of that, we promote its first child
                 // to replace this node.
                 QHash<uint, ThreadNodeInfo>::iterator replaceWith = threading.find(it->children.first());
                 Q_ASSERT(replaceWith != threading.end());
 
-                // Make sure that the offsets are still correct
-                Q_ASSERT(parent->children[it->offset] == it->internalId);
+                // The offsets will, again, be updated later on
+                parentsForRenumbering.insert(it->parent);
+                parentsForRenumbering.insert(replaceWith.key());
+                parentsForRenumbering.remove(it->internalId);
 
                 // Replace the node
-                replaceWith->offset = it->offset;
                 *childIt = it->children.first();
                 replaceWith->parent = parent->internalId;
 
@@ -1118,13 +1139,11 @@ void ThreadingMsgListModel::pruneTree()
                 it->children.removeFirst();
                 replaceWith->children = replaceWith->children + it->children;
 
-                // Fix parent and offset information of all children of the replacement node
+                // Fix parent information of all children of the replacement node
                 for (int i = 0; i < replaceWith->children.size(); ++i) {
                     QHash<uint, ThreadNodeInfo>::iterator sibling = threading.find(replaceWith->children[i]);
                     Q_ASSERT(sibling != threading.end());
-
                     sibling->parent = replaceWith.key();
-                    sibling->offset = i;
                 }
 
                 if (parent->internalId == 0) {
@@ -1146,11 +1165,23 @@ void ThreadingMsgListModel::pruneTree()
             }
         }
     }
+
+    // Now fix the sequential numbering of all siblings of deleted children
+    Q_FOREACH(const auto parentId, parentsForRenumbering) {
+        auto parentIt = threading.constFind(parentId);
+        Q_ASSERT(parentIt != threading.constEnd());
+        int offset = 0;
+        for (auto childNumber = parentIt->children.constBegin(); childNumber != parentIt->children.constEnd(); ++childNumber, ++offset) {
+            auto childIt = threading.find(*childNumber);
+            Q_ASSERT(childIt != threading.end());
+            childIt->offset = offset;
+        }
+    }
 }
 
 QStringList ThreadingMsgListModel::supportedCapabilities()
 {
-    return QStringList() << QLatin1String("THREAD=REFS") << QLatin1String("THREAD=REFERENCES") << QLatin1String("THREAD=ORDEREDSUBJECT");
+    return QStringList() << QStringLiteral("THREAD=REFS") << QStringLiteral("THREAD=REFERENCES") << QStringLiteral("THREAD=ORDEREDSUBJECT");
 }
 
 QStringList ThreadingMsgListModel::mimeTypes() const
@@ -1170,11 +1201,6 @@ QMimeData *ThreadingMsgListModel::mimeData(const QModelIndexList &indexes) const
     return sourceModel()->mimeData(translated);
 }
 
-Qt::DropActions ThreadingMsgListModel::supportedDropActions() const
-{
-    return sourceModel() ? sourceModel()->supportedDropActions() : Qt::DropActions(0);
-}
-
 bool ThreadingMsgListModel::threadContainsUnreadMessages(const uint root) const
 {
     // FIXME: cache the value somewhere...
@@ -1184,11 +1210,13 @@ bool ThreadingMsgListModel::threadContainsUnreadMessages(const uint root) const
         uint current = queue.takeFirst();
         QHash<uint,ThreadNodeInfo>::const_iterator it = threading.constFind(current);
         Q_ASSERT(it != threading.constEnd());
-        Q_ASSERT(it->ptr);
-        TreeItemMessage *message = dynamic_cast<TreeItemMessage *>(it->ptr);
-        Q_ASSERT(message);
-        if (! message->isMarkedAsRead())
-            return true;
+        if (it->ptr) {
+            // Because of the delayed delete via pruneTree, we can hit a null pointer here
+            TreeItemMessage *message = dynamic_cast<TreeItemMessage *>(it->ptr);
+            Q_ASSERT(message);
+            if (! message->isMarkedAsRead())
+                return true;
+        }
         queue.append(it->children);
     }
     return false;
@@ -1218,7 +1246,7 @@ void ThreadingMsgListModel::logTrace(const QString &message)
     Q_ASSERT(realModel);
     QModelIndex mailboxIndex = const_cast<Model *>(realModel)->findMailboxForItems(QModelIndexList() << realIndex);
     const_cast<Model *>(realModel)->logTrace(mailboxIndex, Common::LOG_OTHER,
-            QString::fromUtf8("ThreadingMsgListModel for %1").arg(mailboxIndex.data(RoleMailboxName).toString()), message);
+            QStringLiteral("ThreadingMsgListModel for %1").arg(mailboxIndex.data(RoleMailboxName).toString()), message);
 }
 
 void ThreadingMsgListModel::setUserWantsThreading(bool enable)
@@ -1241,6 +1269,7 @@ bool ThreadingMsgListModel::setUserSearchingSortingPreference(const QStringList 
 bool ThreadingMsgListModel::searchSortPreferenceImplementation(const QStringList &searchConditions, const SortCriterium criterium, const Qt::SortOrder order)
 {
     Q_ASSERT(sourceModel());
+    m_sortReverse = order == Qt::DescendingOrder;
     if (!sourceModel()->rowCount()) {
         return false;
     }
@@ -1253,37 +1282,36 @@ bool ThreadingMsgListModel::searchSortPreferenceImplementation(const QStringList
 
     bool hasDisplaySort = false;
     bool hasSort = false;
-    if (realModel->capabilities().contains(QLatin1String("SORT=DISPLAY"))) {
+    if (realModel->capabilities().contains(QStringLiteral("SORT=DISPLAY"))) {
         hasDisplaySort = true;
         hasSort = true;
-    } else if (realModel->capabilities().contains(QLatin1String("SORT"))) {
+    } else if (realModel->capabilities().contains(QStringLiteral("SORT"))) {
         // just the regular sort
         hasSort = true;
     }
 
-    m_sortReverse = order == Qt::DescendingOrder;
     QStringList sortOptions;
     switch (criterium) {
     case SORT_ARRIVAL:
-        sortOptions << QLatin1String("ARRIVAL");
+        sortOptions << QStringLiteral("ARRIVAL");
         break;
     case SORT_CC:
-        sortOptions << QLatin1String("CC");
+        sortOptions << QStringLiteral("CC");
         break;
     case SORT_DATE:
-        sortOptions << QLatin1String("DATE");
+        sortOptions << QStringLiteral("DATE");
         break;
     case SORT_FROM:
-        sortOptions << (hasDisplaySort ? QLatin1String("DISPLAYFROM") : QLatin1String("FROM"));
+        sortOptions << (hasDisplaySort ? QStringLiteral("DISPLAYFROM") : QStringLiteral("FROM"));
         break;
     case SORT_SIZE:
-        sortOptions << QLatin1String("SIZE");
+        sortOptions << QStringLiteral("SIZE");
         break;
     case SORT_SUBJECT:
-        sortOptions << QLatin1String("SUBJECT");
+        sortOptions << QStringLiteral("SUBJECT");
         break;
     case SORT_TO:
-        sortOptions << (hasDisplaySort ? QLatin1String("DISPLAYTO") : QLatin1String("TO"));
+        sortOptions << (hasDisplaySort ? QStringLiteral("DISPLAYTO") : QStringLiteral("TO"));
         break;
     case SORT_NONE:
         if (m_sortTask && m_sortTask->isPersistent() &&
@@ -1300,19 +1328,18 @@ bool ThreadingMsgListModel::searchSortPreferenceImplementation(const QStringList
             calculateNullSort();
             applySort();
             return true;
-        } else if (searchConditions != m_currentSearchConditions || m_searchValidity != SEARCH_RESULT_FRESH) {
+        } else if (searchConditions != m_currentSearchConditions || m_searchValidity != RESULT_FRESH) {
             // We have to update our search conditions
             m_sortTask = realModel->m_taskFactory->createSortTask(const_cast<Model *>(realModel), mailboxIndex, searchConditions,
                                                                   QStringList());
-            connect(m_sortTask, SIGNAL(sortingAvailable(QList<uint>)), this, SLOT(slotSortingAvailable(QList<uint>)));
-            connect(m_sortTask, SIGNAL(sortingFailed()), this, SLOT(slotSortingFailed()));
-            connect(m_sortTask, SIGNAL(incrementalSortUpdate(Imap::Responses::ESearch::IncrementalContextData_t)),
-                    this, SLOT(slotSortingIncrementalUpdate(Imap::Responses::ESearch::IncrementalContextData_t)));
+            connect(m_sortTask.data(), &SortTask::sortingAvailable, this, &ThreadingMsgListModel::slotSortingAvailable);
+            connect(m_sortTask.data(), &SortTask::sortingFailed, this, &ThreadingMsgListModel::slotSortingFailed);
+            connect(m_sortTask.data(), &SortTask::incrementalSortUpdate, this, &ThreadingMsgListModel::slotSortingIncrementalUpdate);
             m_currentSearchConditions = searchConditions;
-            m_searchValidity = SEARCH_RESULT_ASKED;
+            m_searchValidity = RESULT_ASKED;
         } else {
             // A result of SEARCH has just arrived
-            Q_ASSERT(m_searchValidity == SEARCH_RESULT_FRESH);
+            Q_ASSERT(m_searchValidity == RESULT_FRESH);
             applySort();
         }
 
@@ -1327,7 +1354,7 @@ bool ThreadingMsgListModel::searchSortPreferenceImplementation(const QStringList
     Q_ASSERT(!sortOptions.isEmpty());
 
     if (m_currentSortingCriteria == criterium && m_currentSearchConditions == searchConditions &&
-            m_searchValidity != SEARCH_RESULT_INVALIDATED) {
+            m_searchValidity != RESULT_INVALIDATED) {
         applySort();
     } else {
         m_currentSearchConditions = searchConditions;
@@ -1339,11 +1366,10 @@ bool ThreadingMsgListModel::searchSortPreferenceImplementation(const QStringList
             m_sortTask->cancelSortingUpdates();
 
         m_sortTask = realModel->m_taskFactory->createSortTask(const_cast<Model *>(realModel), mailboxIndex, searchConditions, sortOptions);
-        connect(m_sortTask, SIGNAL(sortingAvailable(QList<uint>)), this, SLOT(slotSortingAvailable(QList<uint>)));
-        connect(m_sortTask, SIGNAL(sortingFailed()), this, SLOT(slotSortingFailed()));
-        connect(m_sortTask, SIGNAL(incrementalSortUpdate(Imap::Responses::ESearch::IncrementalContextData_t)),
-                this, SLOT(slotSortingIncrementalUpdate(Imap::Responses::ESearch::IncrementalContextData_t)));
-        m_searchValidity = SEARCH_RESULT_ASKED;
+        connect(m_sortTask.data(), &SortTask::sortingAvailable, this, &ThreadingMsgListModel::slotSortingAvailable);
+        connect(m_sortTask.data(), &SortTask::sortingFailed, this, &ThreadingMsgListModel::slotSortingFailed);
+        connect(m_sortTask.data(), &SortTask::incrementalSortUpdate, this, &ThreadingMsgListModel::slotSortingIncrementalUpdate);
+        m_searchValidity = RESULT_ASKED;
     }
 
     return true;
@@ -1367,16 +1393,14 @@ void ThreadingMsgListModel::applySort()
     updatePersistentIndexesPhase1();
     QSet<uint> newlyUnreachable(threading[0].children.toSet());
     threading[0].children.clear();
-#if QT_VERSION >= 0x040700
-    threading[0].children.reserve(m_currentSortResult.size());
-#endif
+    threading[0].children.reserve(m_currentSortResult.size() + headroomForNewmessages);
 
     QSet<uint> allRootIds(threadedRootIds.toSet());
 
     for (int i = 0; i < m_currentSortResult.size(); ++i) {
         int offset = m_sortReverse ? m_currentSortResult.size() - 1 - i : i;
         QList<TreeItemMessage *> messages = const_cast<Model*>(realModel)
-                ->findMessagesByUids(mailbox, QList<uint>() << m_currentSortResult[offset]);
+                ->findMessagesByUids(mailbox, Imap::Uids() << m_currentSortResult[offset]);
         if (messages.isEmpty()) {
             // wrong UID, weird
             continue;
@@ -1393,14 +1417,15 @@ void ThreadingMsgListModel::applySort()
     }
 
     // Now remove everything which is no longer reachable from the root of the thread mapping
-    newlyUnreachable -= threading[0].children.toSet();
-    while (!newlyUnreachable.isEmpty()) {
-        QSet<uint>::iterator it = newlyUnreachable.begin();
-        uint item = *it;
-        newlyUnreachable.erase(it);
-        QHash<uint,ThreadNodeInfo>::iterator threadingIt = threading.find(item);
+    // Start working on the top-level orphans
+    Q_FOREACH(const uint uid, threading[0].children) {
+        newlyUnreachable.remove(uid);
+    }
+    std::vector<uint> queue(newlyUnreachable.constBegin(), newlyUnreachable.constEnd());
+    for (std::vector<uint>::size_type i = 0; i < queue.size(); ++i) {
+        QHash<uint,ThreadNodeInfo>::iterator threadingIt = threading.find(queue[i]);
         Q_ASSERT(threadingIt != threading.end());
-        newlyUnreachable += threadingIt->children.toSet();
+        queue.insert(queue.end(), threadingIt->children.constBegin(), threadingIt->children.constEnd());
         threading.erase(threadingIt);
     }
 
@@ -1421,6 +1446,11 @@ ThreadingMsgListModel::SortCriterium ThreadingMsgListModel::currentSortCriterium
 Qt::SortOrder ThreadingMsgListModel::currentSortOrder() const
 {
     return m_sortReverse ? Qt::DescendingOrder : Qt::AscendingOrder;
+}
+
+QModelIndex ThreadingMsgListModel::sibling(int row, int column, const QModelIndex &idx) const
+{
+    return index(row, column, idx.parent());
 }
 
 }

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -27,6 +27,7 @@
 #include <QVariantList>
 
 class QTextStream;
+class ImapMessageTest;
 
 /** @short Namespace for IMAP interaction */
 namespace Imap
@@ -37,6 +38,8 @@ namespace Imap
 namespace Message
 {
 
+class Envelope;
+
 /** @short Storage container for one address from an envelope */
 class MailAddress {
 public:
@@ -45,7 +48,8 @@ public:
     typedef enum {
         FORMAT_JUST_NAME, /**< @short Just the human-readable name */
         FORMAT_READABLE, /**< @short Real Name <foo@example.org> */
-        FORMAT_CLICKABLE /**< @short HTML clickable form of FORMAT_READABLE */
+        FORMAT_CLICKABLE, /**< @short HTML clickable form of FORMAT_READABLE */
+        FORMAT_SHORT_CLICKABLE /**< @short HTML clickable form of FORMAT_READABLE with conditionally elided text */
     } FormattingMode;
 
     /** @short Phrase from RFC2822 mailbox */
@@ -60,22 +64,37 @@ public:
     /** @short RFC2822 Domain Name */
     QString host;
 
-    MailAddress(const QString &_name, const QString &_adl,
-                const QString &_mailbox, const QString &_host):
-        name(_name), adl(_adl), mailbox(_mailbox), host(_host) {}
-    MailAddress(const QVariantList &input, const QByteArray &line, const int start);
+    /** @short Construct from already decoded Unicode data */
+    MailAddress(const QString &name, const QString &adl,
+                const QString &mailbox, const QString &host):
+        name(name), adl(adl), mailbox(mailbox), host(host) {}
+
+    /** @short Construct an invalid, empty MailAddress, something with no content */
     MailAddress() {}
+
     QString prettyName(FormattingMode mode) const;
 
     QByteArray asSMTPMailbox() const;
     QByteArray asMailHeader() const;
     QString asPrettyString() const;
+    QUrl asUrl() const;
+
+    bool hasUsefulDisplayName() const;
 
     static QString prettyList(const QList<MailAddress> &list, FormattingMode mode);
     static QString prettyList(const QVariantList &list, FormattingMode mode);
 
     static bool fromPrettyString(MailAddress &into, const QString &address);
     static bool parseOneAddress(MailAddress &into, const QString &address, int &startOffset);
+    static bool fromUrl(MailAddress &into, const QUrl &url, const QString &expectedScheme);
+
+    static MailAddress fromNameAndMail(const QString &name, const QString &email);
+
+private:
+    /** @short Construct from a list of raw items as found in an IMAP ENVELOPE */
+    MailAddress(const QVariantList &input, const QByteArray &line, const int start);
+    friend class Envelope;
+    friend class ::ImapMessageTest;
 };
 
 QTextStream &operator<<(QTextStream &stream, const MailAddress &address);
@@ -99,6 +118,16 @@ public:
 These ugly functors are needed as long as we need support for pre-C++11 compilers.
 */
 class MailAddressesEqualByDomain: public std::binary_function<MailAddress, MailAddress, bool>
+{
+public:
+    result_type operator()(const MailAddress &a, const MailAddress &b) const;
+};
+
+/** @short Is the second domain a prefix of the first one?
+
+Insert the usual complaint about lack of C++11 support here.
+*/
+class MailAddressesEqualByDomainSuffix: public std::binary_function<MailAddress, MailAddress, bool>
 {
 public:
     result_type operator()(const MailAddress &a, const MailAddress &b) const;

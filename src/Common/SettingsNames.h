@@ -1,4 +1,5 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
+   Copyright (C) 2014        Luke Dashjr <luke+trojita@dashjr.org>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -28,25 +29,34 @@ namespace Common
 {
 
 struct SettingsNames {
-    static QString identitiesKey, realNameKey, addressKey, organisationKey, signatureKey, obsRealNameKey, obsAddressKey;
-    static QString msaMethodKey, methodSMTP, methodSSMTP, methodSENDMAIL, methodImapSendmail, smtpHostKey,
-           smtpPortKey, smtpAuthKey, smtpStartTlsKey, smtpUserKey, smtpPassKey,
+    static const QString identitiesKey, realNameKey, addressKey, organisationKey, signatureKey, obsRealNameKey, obsAddressKey;
+    static const QString msaMethodKey, methodSMTP, methodSSMTP, methodSENDMAIL, methodImapSendmail, smtpHostKey,
+           smtpPortKey, smtpAuthKey, smtpStartTlsKey, smtpUserKey, smtpAuthReuseImapCredsKey,
            sendmailKey, sendmailDefaultCmd;
-    static QString imapMethodKey, methodTCP, methodSSL, methodProcess, imapHostKey,
-           imapPortKey, imapStartTlsKey, imapUserKey, imapPassKey, imapProcessKey,
-           imapStartOffline, imapEnableId, imapSslPemCertificate, imapBlacklistedCapabilities;
-    static QString composerSaveToImapKey, composerImapSentKey, smtpUseBurlKey;
-    static QString cacheMetadataKey, cacheMetadataMemory,
+    static const QString imapMethodKey, methodTCP, methodSSL, methodProcess, imapHostKey,
+           imapPortKey, imapStartTlsKey, imapUserKey, imapProcessKey, imapStartMode, netOffline, netExpensive, netOnline,
+           obsImapStartOffline, obsImapSslPemCertificate, imapSslPemPubKey,
+           imapBlacklistedCapabilities, imapUseSystemProxy, imapNeedsNetwork, imapNumberRefreshInterval;
+    static const QString composerSaveToImapKey, composerImapSentKey, smtpUseBurlKey;
+    static const QString cacheMetadataKey, cacheMetadataMemory,
            cacheOfflineKey, cacheOfflineNone, cacheOfflineXDays, cacheOfflineAll, cacheOfflineNumberDaysKey;
-    static QString xtConnectCacheDirectory, xtSyncMailboxList, xtDbHost, xtDbPort,
+    static const QString xtConnectCacheDirectory, xtSyncMailboxList, xtDbHost, xtDbPort,
            xtDbDbName, xtDbUser;
-    static QString guiMsgListShowThreading;
-    static QString guiMsgListHideRead;
-    static QString guiMailboxListShowOnlySubscribed;
-    static QString guiPreferPlaintextRendering;
-    static QString guiMainWindowLayout, guiMainWindowLayoutCompact, guiMainWindowLayoutWide;
-    static QString appLoadHomepage;
-    static QString knownEmailsKey;
+    static const QString guiMsgListShowThreading;
+    static const QString guiMsgListHideRead;
+    static const QString guiMailboxListShowOnlySubscribed;
+    static const QString guiPreferPlaintextRendering;
+    static const QString guiMainWindowLayout, guiMainWindowLayoutCompact, guiMainWindowLayoutWide, guiMainWindowLayoutOneAtTime;
+    static const QString guiSizesInMainWinWhenCompact, guiSizesInMainWinWhenWide, guiSizesInaMainWinWhenOneAtATime;
+    static const QString guiAllowRawSearch;
+    static const QString guiExpandedMailboxes;
+    static const QString appLoadHomepage;
+    static const QString guiShowSystray, guiOnSystrayClose, guiStartMinimized;
+    static const QString knownEmailsKey;
+    static const QString addressbookPlugin, passwordPlugin;
+    static const QString imapIdleRenewal;
+    static const QString autoMarkReadEnabled, autoMarkReadSeconds;
+    static const QString interopRevealVersions;
 };
 
 }

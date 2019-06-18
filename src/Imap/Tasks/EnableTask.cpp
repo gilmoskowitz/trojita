@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,10 @@
 
 
 #include "EnableTask.h"
-#include "ItemRoles.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
-#include "MailboxTree.h"
 
 namespace Imap
 {
@@ -72,7 +72,7 @@ bool EnableTask::handleStateHelper(const Imap::Responses::State *const resp)
             // nothing should be needed here
             _completed();
         } else {
-            _failed("ENABLE failed, strange");
+            _failed(tr("ENABLE failed, strange"));
             // FIXME: error handling
         }
         return true;

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -48,6 +48,7 @@ public:
 private slots:
     /** @short Try to guess a non-existing mailbox name */
     void doFakeSelect();
+    void resetConnectionState();
 private:
     CommandHandle unSelectTag;
     CommandHandle selectMissingTag;

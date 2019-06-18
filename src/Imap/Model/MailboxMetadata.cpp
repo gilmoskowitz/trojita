@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -44,6 +44,11 @@ bool SyncState::isUsableForNumbers() const
 bool SyncState::isUsableForSyncing() const
 {
     return m_hasExists && m_hasUidNext && m_hasUidValidity;
+}
+
+bool SyncState::isUsableForSyncingWithoutUidNext() const
+{
+    return m_hasExists && m_hasUidValidity;
 }
 
 bool SyncState::isUsableForCondstore() const
@@ -161,7 +166,7 @@ bool SyncState::completelyEqualTo(const SyncState &other) const
             m_hasFlags == other.m_hasFlags && m_hasPermanentFlags == other.m_hasPermanentFlags;
 }
 
-QDebug operator<<(QDebug &dbg, const Imap::Mailbox::SyncState &state)
+QDebug operator<<(QDebug dbg, const Imap::Mailbox::SyncState &state)
 {
     dbg << "UIDVALIDITY";
     if (state.m_hasUidValidity)
@@ -210,7 +215,7 @@ QDebug operator<<(QDebug &dbg, const Imap::Mailbox::SyncState &state)
 }
 
 
-QDebug operator<<(QDebug &dbg, const Imap::Mailbox::MailboxMetadata &metadata)
+QDebug operator<<(QDebug dbg, const Imap::Mailbox::MailboxMetadata &metadata)
 {
     return dbg << metadata.mailbox << metadata.separator << metadata.flags;
 }

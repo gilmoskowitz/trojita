@@ -47,7 +47,7 @@ static const char hexChars[16] =
   '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
 };
 
-static const unsigned int maxQPLineLength = 70;
+static const unsigned int maxQPLineLength = 76;
 
 } // namespace KCodecs
 
@@ -56,7 +56,7 @@ static const unsigned int maxQPLineLength = 70;
 // strchr(3) for broken systems.
 static int rikFindChar(register const char * _s, const char c)
 {
-  register const char * s = _s;
+  const char * s = _s;
 
   while (true)
   {
@@ -84,8 +84,8 @@ void KCodecs::quotedPrintableEncode(const QByteArray& in, QByteArray& out, bool 
 
   char *cursor;
   const char *data;
-  unsigned int lineLength;
-  unsigned int pos;
+  unsigned int lineLength = 0;
+  unsigned int pos = 0;
 
   const unsigned int length = in.size();
   const unsigned int end = length - 1;
@@ -98,8 +98,6 @@ void KCodecs::quotedPrintableEncode(const QByteArray& in, QByteArray& out, bool 
   out.resize ((length*12)/10);
   cursor = out.data();
   data = in.data();
-  lineLength = 0;
-  pos = 0;
 
   for (unsigned int i = 0; i < length; i++)
   {
@@ -208,10 +206,8 @@ void KCodecs::quotedPrintableDecode(const QByteArray& in, QByteArray& out)
       return;
 
   char *cursor;
-  const char *data;
   const unsigned int length = in.size();
 
-  data = in.data();
   out.resize (length);
   cursor = out.data();
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,11 +22,11 @@
 
 #include "SortTask.h"
 #include <algorithm>
-#include "ItemRoles.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
+#include "Imap/Model/TaskPresentationModel.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
-#include "MailboxTree.h"
-#include "TaskPresentationModel.h"
 
 namespace Imap
 {
@@ -41,7 +41,7 @@ SortTask::SortTask(Model *model, const QModelIndex &mailbox, const QStringList &
     conn = model->findTaskResponsibleFor(mailbox);
     conn->addDependentTask(this);
     if (searchConditions.isEmpty())
-        this->searchConditions << QLatin1String("ALL");
+        this->searchConditions << QStringLiteral("ALL");
 }
 
 void SortTask::perform()
@@ -52,7 +52,7 @@ void SortTask::perform()
     IMAP_TASK_CHECK_ABORT_DIE;
 
     if (! mailboxIndex.isValid()) {
-        _failed("Mailbox vanished before we could ask for threading info");
+        _failed(tr("Mailbox vanished before we could ask for threading info"));
         return;
     }
 
@@ -63,34 +63,38 @@ void SortTask::perform()
 
     if (sortCriteria.isEmpty()) {
         if (model->accessParser(parser).capabilitiesFresh &&
-                model->accessParser(parser).capabilities.contains(QLatin1String("ESEARCH"))) {
+                model->accessParser(parser).capabilities.contains(QStringLiteral("ESEARCH"))) {
             // We always prefer ESEARCH over SEARCH, if only for its embedded reference to the command tag
-            if (model->accessParser(parser).capabilities.contains(QLatin1String("CONTEXT=SEARCH"))) {
+            if (model->accessParser(parser).capabilities.contains(QStringLiteral("CONTEXT=SEARCH"))) {
                 // Hurray, this IMAP server supports incremental ESEARCH updates
                 m_persistentSearch = true;
                 sortTag = parser->uidESearch("utf-8", searchConditions,
-                                             QStringList() << QLatin1String("ALL") << QLatin1String("UPDATE"));
+                                             QStringList() << QStringLiteral("ALL") << QStringLiteral("UPDATE"));
             } else {
                 // ESORT without CONTEXT is still worth the effort, if only for the tag reference
-                sortTag = parser->uidESearch("utf-8", searchConditions, QStringList());
+                sortTag = parser->uidESearch("utf-8", searchConditions, QStringList() << QStringLiteral("ALL"));
             }
         } else {
             // Plain "old" SORT
-            sortTag = parser->uidSearch(searchConditions, "utf-8");
+            sortTag = parser->uidSearch(searchConditions,
+                                        // It looks that Exchange 2003 does not support the UTF-8 charset in searches.
+                                        // That is, of course, insane, and only illustrates how useless its support of IMAP really is.
+                                        model->m_capabilitiesBlacklist.contains(QStringLiteral("X-NO-UTF8-SEARCH")) ? QByteArray() : "utf-8"
+                                        );
         }
     } else {
         // SEARCH and SORT combined
         if (model->accessParser(parser).capabilitiesFresh &&
-                model->accessParser(parser).capabilities.contains(QLatin1String("ESORT"))) {
+                model->accessParser(parser).capabilities.contains(QStringLiteral("ESORT"))) {
             // ESORT's better than regular SORT, if only for its embedded reference to the command tag
-            if (model->accessParser(parser).capabilities.contains(QLatin1String("CONTEXT=SORT"))) {
+            if (model->accessParser(parser).capabilities.contains(QStringLiteral("CONTEXT=SORT"))) {
                 // Hurray, this IMAP server supports incremental SORT updates
                 m_persistentSearch = true;
                 sortTag = parser->uidESort(sortCriteria, "utf-8", searchConditions,
-                                       QStringList() << QLatin1String("ALL") << QLatin1String("UPDATE"));
+                                       QStringList() << QStringLiteral("ALL") << QStringLiteral("UPDATE"));
             } else {
                 // ESORT without CONTEXT is still worth the effort, if only for the tag reference
-                sortTag = parser->uidESort(sortCriteria, "utf-8", searchConditions, QStringList());
+                sortTag = parser->uidESort(sortCriteria, "utf-8", searchConditions, QStringList() << QStringLiteral("ALL"));
             }
         } else {
             // Plain "old" SORT
@@ -107,7 +111,7 @@ bool SortTask::handleStateHelper(const Imap::Responses::State *const resp)
             const Responses::RespData<QString> *const untaggedTag = dynamic_cast<const Responses::RespData<QString>* const>(
                         resp->respCodeData.data());
             Q_ASSERT(untaggedTag);
-            if (untaggedTag->data == sortTag) {
+            if (untaggedTag->data.toUtf8() == sortTag) {
                 m_persistentSearch = false;
                 model->m_taskModel->slotTaskMighHaveChanged(this);
 
@@ -143,7 +147,7 @@ bool SortTask::handleStateHelper(const Imap::Responses::State *const resp)
                 keepTask->activateTasks();
             }
         } else {
-            _failed("Sorting command has failed");
+            _failed(tr("Sorting command has failed"));
         }
         return true;
     } else if (resp->tag == cancelUpdateTag) {
@@ -164,7 +168,7 @@ bool SortTask::handleSort(const Imap::Responses::Sort *const resp)
 
 bool SortTask::handleSearch(const Imap::Responses::Search *const resp)
 {
-    if (searchConditions == QStringList() << QLatin1String("ALL")) {
+    if (searchConditions == QStringList() << QStringLiteral("ALL")) {
         // We're really a SORT task, so we shouldn't process this stuff
         return false;
     }
@@ -185,10 +189,6 @@ bool SortTask::handleESearch(const Responses::ESearch *const resp)
     if (resp->tag != sortTag)
         return false;
 
-    if (resp->seqOrUids != Imap::Responses::ESearch::UIDS)
-        throw UnexpectedResponseReceived("ESEARCH response to a UID SORT command with matching tag uses "
-                                         "sequence numbers instead of UIDs", *resp);
-
     Responses::ESearch::CompareListDataIdentifier<Responses::ESearch::ListData_t> allComparator("ALL");
     Responses::ESearch::ListData_t::const_iterator allIterator =
             std::find_if(resp->listData.constBegin(), resp->listData.constEnd(), allComparator);
@@ -196,6 +196,14 @@ bool SortTask::handleESearch(const Responses::ESearch *const resp)
     if (allIterator != resp->listData.constEnd()) {
         m_firstUntaggedReceived = true;
         sortResult = allIterator->second;
+
+        if (!sortResult.isEmpty()) {
+            // Only check when the result set is non-empty, https://bugs.kde.org/show_bug.cgi?id=350698
+            if (resp->seqOrUids != Imap::Responses::ESearch::UIDS) {
+                throw UnexpectedResponseReceived("ESEARCH response to a UID SEARCH / UID SORT command with matching tag uses "
+                                                 "sequence numbers instead of UIDs", *resp);
+            }
+        }
 
         ++allIterator;
         if (std::find_if(allIterator, resp->listData.constEnd(), allComparator) != resp->listData.constEnd())
@@ -214,6 +222,11 @@ bool SortTask::handleESearch(const Responses::ESearch *const resp)
         // This means that there have been no matches
         // FIXME: cover this in the test suite!
         return true;
+    } else {
+        if (resp->seqOrUids != Imap::Responses::ESearch::UIDS) {
+            throw UnexpectedResponseReceived("ESEARCH response to a UID SEARCH / UID SORT command with matching tag uses "
+                                             "sequence numbers instead of UIDs", *resp);
+        }
     }
 
     Q_ASSERT(!resp->incrementalContextData.isEmpty());

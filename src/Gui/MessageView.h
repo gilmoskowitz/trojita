@@ -1,4 +1,5 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2016 Jan Kundrát <jkt@kde.org>
+   Copyright (C) 2014 - 2015 Stephan Platz <trojita@paalsteek.de>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -23,34 +24,49 @@
 #define VIEW_MESSAGEVIEW_H
 
 #include <QPersistentModelIndex>
+#include <QPointer>
+#include <QSet>
 #include <QWidget>
 #include "Composer/Recipients.h"
+#include "Gui/PartWalker.h"
 
 class QBoxLayout;
 class QLabel;
 class QLayout;
+class QSettings;
+class QStackedLayout;
 class QTimer;
 class QUrl;
 class QWebView;
 
-namespace Imap
-{
-namespace Network
-{
+namespace Cryptography {
+class MessageModel;
+}
+
+namespace Imap {
+namespace Network {
 class MsgPartNetAccessManager;
 }
-namespace Message
-{
+namespace Message {
 class Envelope;
 }
+namespace Mailbox {
+class NetworkWatcher;
+}
 }
 
-namespace Gui
-{
+namespace Plugins {
+class PluginManager;
+}
 
+namespace Gui {
+
+class AbstractPartWidget;
+class EmbeddedWebView;
+class EnvelopeView;
 class MainWindow;
-class PartWidgetFactory;
 class ExternalElementsWidget;
+class Spinner;
 class TagListWidget;
 
 
@@ -63,51 +79,78 @@ class MessageView : public QWidget
 {
     Q_OBJECT
 public:
-    explicit MessageView(QWidget *parent=0);
+    MessageView(QWidget *parent, QSettings *settings, Plugins::PluginManager *pluginManager);
     ~MessageView();
 
+    void setNetworkWatcher(Imap::Mailbox::NetworkWatcher *netWatcher);
     void reply(MainWindow *mainWindow, Composer::ReplyMode mode);
+    void forward(MainWindow *mainWindow, const Composer::ForwardMode mode);
     QModelIndex currentMessage() const;
+    Plugins::PluginManager *pluginManager() const;
 public slots:
     void setMessage(const QModelIndex &index);
     void setEmpty();
     void setHomepageUrl(const QUrl &homepage);
+    void stopAutoMarkAsRead();
+    void zoomIn();
+    void zoomOut();
+    void zoomOriginal();
 protected:
-    void showEvent(QShowEvent *se);
+    void showEvent(QShowEvent *se) override;
 private slots:
     void markAsRead();
     void externalsRequested(const QUrl &url);
-    void externalsEnabled();
-    void linkInTitleHovered(const QString &target);
+    void enableExternalData();
     void newLabelAction(const QString &tag);
     void deleteLabelAction(const QString &tag);
-    void handleDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight);
-    void headerLinkActivated(QString);
     void partContextMenuRequested(const QPoint &point);
     void partLinkHovered(const QString &link, const QString &title, const QString &textContent);
+    void triggerSearchDialog();
+    void onWebViewLoadStarted();
+    void onWebViewLoadFinished();
 signals:
     void messageChanged();
+    void messageModelChanged(QAbstractItemModel *model);
     void linkHovered(const QString &url);
+    void searchRequestedBy(EmbeddedWebView *webView);
+    void transferError(const QString &errorString);
 private:
-    bool eventFilter(QObject *object, QEvent *event);
+    bool eventFilter(QObject *object, QEvent *event) override;
     Imap::Message::Envelope envelope() const;
-    QString headerText();
     QString quoteText() const;
+    void showMessageNow();
+    AbstractPartWidget *bodyWidget() const;
+    void unsetPreviousMessage();
+    void clearWaitingConns();
 
-    QWidget *viewer;
-    QWidget *headerSection;
-    QLabel *header;
+    QStackedLayout *m_stack;
+    QWebView *m_homePage;
+
+    QWidget *m_messageWidget;
+    QBoxLayout *m_msgLayout;
+    EnvelopeView *m_envelope;
     ExternalElementsWidget *externalElements;
-    QBoxLayout *layout;
     TagListWidget *tags;
     QPersistentModelIndex message;
+    Cryptography::MessageModel *messageModel;
     Imap::Network::MsgPartNetAccessManager *netAccess;
+    QPointer<Imap::Mailbox::NetworkWatcher> m_netWatcher;
     QTimer *markAsReadTimer;
-    QWebView *emptyView;
-    PartWidgetFactory *factory;
+    QWidget *m_bodyWidget;
+    QAction *m_zoomIn, *m_zoomOut, *m_zoomOriginal;
+
+    std::unique_ptr<PartWidgetFactory> factory;
+    Spinner *m_loadingSpinner;
+    QSettings *m_settings;
+    Plugins::PluginManager *m_pluginManager;
+    QSet<QWebView*> m_loadingItems;
+
+    std::vector<QMetaObject::Connection> m_waitingMessageConns;
 
     MessageView(const MessageView &); // don't implement
     MessageView &operator=(const MessageView &); // don't implement
+
+    friend class SimplePartWidget; // needs access to onWebViewLoadStarted/onWebViewLoadFinished
 };
 
 }

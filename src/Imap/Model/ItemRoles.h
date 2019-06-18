@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -23,18 +23,10 @@
 #ifndef IMAP_MODEL_ITEMROLES_H
 #define IMAP_MODEL_ITEMROLES_H
 
-#include <QByteArray>
-#include <QList>
-#include <QMetaType>
+#include <Qt>
 
-// The following is needed for RoleMessageHdrReferences
-Q_DECLARE_METATYPE(QList<QByteArray>)
-
-namespace Imap
-{
-
-namespace Mailbox
-{
+namespace Imap {
+namespace Mailbox {
 
 /** @short Custom item data roles for IMAP */
 enum {
@@ -43,6 +35,8 @@ enum {
 
     /** @short Is the item already fetched? */
     RoleIsFetched,
+    /** @short The item is not available -- perhaps we're offline and it isn't cached */
+    RoleIsUnavailable,
 
     /** @short Name of the mailbox */
     RoleMailboxName,
@@ -61,10 +55,10 @@ enum {
     /** @short The mailbox can be selected */
     RoleMailboxIsSelectable,
     /** @short The mailbox has child mailboxes */
-    RoleMailboxHasChildmailboxes,
+    RoleMailboxHasChildMailboxes,
     /** @short Information about whether the number of messages in the mailbox has already been loaded */
     RoleMailboxNumbersFetched,
-    /** @short Is anything still loading for tihs mailbox? */
+    /** @short Is anything still loading for this mailbox? */
     RoleMailboxItemsAreLoading,
     /** @short Current UIDVALIDITY of a mailbox */
     RoleMailboxUidValidity,
@@ -113,6 +107,12 @@ enum {
     RoleMessageIsMarkedReplied,
     /** @short Is the message marked as a recent one? */
     RoleMessageIsMarkedRecent,
+    /** @short Is the message markes as flagged? */
+    RoleMessageIsMarkedFlagged,
+    /** @short Is the message markes as junk? */
+    RoleMessageIsMarkedJunk,
+    /** @short Is the message markes as notjunk? */
+    RoleMessageIsMarkedNotJunk,
     /** @short IMAP flags of a message */
     RoleMessageFlags,
     /** @short Is the current item a root of thread with unread messages */
@@ -125,15 +125,26 @@ enum {
     RoleMessageHeaderListPost,
     /** @short Is the List-Post set to a special value of "NO"? */
     RoleMessageHeaderListPostNo,
+    /** @short A full message envelope */
+    RoleMessageEnvelope,
+    /** @short Is this a mail with at least one attachment?
+
+    The returned value might be a bit fuzzy.
+    */
+    RoleMessageHasAttachments,
 
     /** @short Contents of a message part */
     RolePartData,
+    /** @short Unicode text, i.e. RolePartData already decoded */
+    RolePartUnicodeText,
     /** @short MIME type of a message part */
     RolePartMimeType,
     /** @short Charset of a message part */
     RolePartCharset,
     /** @short The format= parameter of the message part's Content-Type */
     RolePartContentFormat,
+    /** @short The delsp= parameter of the message part's Content-Type */
+    RolePartContentDelSp,
     /** @short Encoding of a message part */
     RolePartEncoding,
     /** @short The body-fld-id field from BODYSTRUCTURE */
@@ -150,6 +161,69 @@ enum {
     RolePartPathToPart,
     /** @short CID of the main part of a multipart/related message */
     RolePartMultipartRelatedMainCid,
+    /** @short Is this a top-level multipart, i.e. a multipart/... and a child of a message/rfc822? See isTopLevelMultipart. */
+    RolePartIsTopLevelMultipart,
+    /** @short Return the body-fld-param from BODUSTRUCTURE, which usually contains some optional MIME parameters about this part */
+    RolePartBodyFldParam,
+
+    /** @short Fetch a part from the cache if it's available, but do not request it from the server */
+    RolePartForceFetchFromCache,
+    /** @short Pointer to the internal buffer */
+    RolePartBufferPtr,
+
+    /** @short QModelIndex of the message a part is associated to */
+    RolePartMessageIndex,
+
+
+    /** @short Is the format of this particular multipart/signed supported for signature verification?
+
+    A multipart/signed could use some unrecognized or unsupported algorithm, in which case we won't even try
+    to verify the signature. If this is role returns true, it means that there will be just one child item
+    and that that child's validity will be checked by the crypto operation. This role does not imply anything
+    about the validity of the actual signature, though.
+    */
+    RolePartSignatureVerifySupported,
+    /** @short Is the format of this particular multipart/encrypted supported and recognized?
+
+    See RolePartSignatureVerifySupported, this is an equivalent.
+    */
+    RolePartDecryptionSupported,
+    /** @short Is there any point in waiting longer?
+
+    If true, this means that the crypto code is either waiting for data from the network, or that there is
+    a crypto operation in progress.
+    */
+    RolePartCryptoNotFinishedYet,
+    /** @short Was there a failure in some cryptography operation which affected the ability to show the message?
+
+    "Failure" means that something went wrong. Maybe some system component failed, or the message arrived too damaged to
+    be decrypted. This state has nothing to do with, say, a message whose signature failed to verify.
+    */
+    RolePartCryptoDecryptionFailed,
+    /** @short Short message about the status/result of a crypto operation
+
+    This is suitable for an immediate presentation to the user. The text should be short enough to not distract
+    the user too much, but also descriptive enough to make sense on its own, without having to consult the longer,
+    more detailed status message.
+    */
+    RolePartCryptoTLDR,
+    /** @short Longer information about the status/result of a crypto operation
+
+    This can be shown to the user when they ask for more details. It could possibly be a very long text, including some cryptic
+    output from gpg's stderr, for example.
+    */
+    RolePartCryptoDetailedMessage,
+    /** @short Icon name for showing the result of a crypto operation */
+    RolePartCryptoStatusIconName,
+    /** @short Is this a valid signature subject to all checks, whatever they are? */
+    RolePartSignatureValidTrusted,
+    /** @short Is this a technically valid signature without taking the trust level and other policies into account? */
+    RolePartSignatureValidDisregardingTrust,
+    /** @short Who made the signature */
+    RolePartSignatureSignerName,
+    /** @short When was the signature made */
+    RolePartSignatureSignDate,
+
 
     /** @short True if the item in the tasks list is actually a ParserState
 
@@ -164,11 +238,17 @@ enum {
     /** @short A short explanaiton of the task -- what is it doing? */
     RoleTaskCompactName,
 
+    /** @short Content-Disposition (inline or attachment) of an attachment within MessageComposer
+
+    The enum value is converted to int.
+    */
+    RoleAttachmentContentDispositionMode,
+
     /** @short The very last role */
     RoleInvalidLastOne
 };
-}
 
+}
 }
 
 #endif // IMAP_MODEL_ITEMROLES_H

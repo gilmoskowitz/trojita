@@ -55,7 +55,6 @@ static const unsigned char base64chars[] =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,";
 #define UNDEFINED 64
 #define MAXLINE  76
-static const char especials[17] = "()<>@,;:\"/[]?.= ";
 
 /* UTF16 definitions */
 #define UTF16MASK       0x03FFUL
@@ -68,15 +67,14 @@ static const char especials[17] = "()<>@,;:\"/[]?.= ";
 //@endcond
 
 //-----------------------------------------------------------------------------
-QString KIMAP::decodeImapFolderName( const QString &inSrc )
+QString KIMAP::decodeImapFolderName( const QByteArray &src )
 {
   unsigned char c, i, bitcount;
   unsigned long ucs4, utf16, bitbuf;
   unsigned char base64[256], utf8[6];
   unsigned int srcPtr = 0;
   QByteArray dst;
-  QByteArray src = inSrc.toUtf8();
-  uint srcLen = inSrc.length();
+  uint srcLen = src.length();
 
   /* initialize modified base64 decoding table */
   memset( base64, UNDEFINED, sizeof( base64 ) );
@@ -153,28 +151,12 @@ QString KIMAP::decodeImapFolderName( const QString &inSrc )
 }
 
 //-----------------------------------------------------------------------------
-QString KIMAP::quoteIMAP( const QString &src )
-{
-  uint len = src.length();
-  QString result;
-  result.reserve( 2 * len );
-  for ( unsigned int i = 0; i < len; i++ ) {
-    if ( src[i] == QLatin1Char('"') || src[i] == QLatin1Char('\\') ) {
-      result += QLatin1Char('\\');
-    }
-    result += src[i];
-  }
-  //result.squeeze(); - unnecessary and slow
-  return result;
-}
-
-//-----------------------------------------------------------------------------
-QString KIMAP::encodeImapFolderName( const QString &inSrc )
+QByteArray KIMAP::encodeImapFolderName( const QString &inSrc )
 {
   unsigned int utf8pos, utf8total, c, utf7mode, bitstogo, utf16flag;
   unsigned int ucs4, bitbuf;
   QByteArray src = inSrc.toUtf8 ();
-  QString dst;
+  QByteArray dst;
 
   int srcPtr = 0;
   utf7mode = 0;
@@ -190,16 +172,16 @@ QString KIMAP::encodeImapFolderName( const QString &inSrc )
       /* switch out of UTF-7 mode */
       if ( utf7mode ) {
         if ( bitstogo ) {
-          dst += QChar::fromLatin1(base64chars[( bitbuf << ( 6 - bitstogo ) ) & 0x3F]);
+          dst += base64chars[( bitbuf << ( 6 - bitstogo ) ) & 0x3F];
           bitstogo = 0;
         }
-        dst += QLatin1Char('-');
+        dst += '-';
         utf7mode = 0;
       }
       dst += c;
       /* encode '&' as '&-' */
       if ( c == '&' ) {
-        dst += QLatin1Char('-');
+        dst += '-';
       }
       continue;
     }
@@ -264,5 +246,5 @@ QString KIMAP::encodeImapFolderName( const QString &inSrc )
     }
     dst += '-';
   }
-  return quoteIMAP( dst );
+  return dst;
 }

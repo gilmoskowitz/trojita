@@ -1,4 +1,6 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2016 Jan Kundrát <jkt@kde.org>
+   Copyright (C) 2014        Luke Dashjr <luke+trojita@dashjr.org>
+   Copyright (C) 2014 - 2015 Stephan Platz <trojita@paalsteek.de>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -19,138 +21,117 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-#include <QDebug>
-#include <QDesktopServices>
-#include <QHeaderView>
+
 #include <QKeyEvent>
-#include <QLabel>
 #include <QMenu>
-#include <QMessageBox>
-#include <QTextDocument>
-#include <QTimer>
-#include <QUrl>
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-#include <QUrlQuery>
-#endif
-#include <QVBoxLayout>
-#include <QWebFrame>
-#include <QWebHistory>
-#include <QWebHitTestResult>
-#include <QWebPage>
+#include <QSettings>
+#include <QStackedLayout>
 
-#include "MessageView.h"
-#include "AbstractPartWidget.h"
+#include "Common/InvokeMethod.h"
+#include "Common/SettingsNames.h"
+#include "Composer/QuoteText.h"
 #include "Composer/SubjectMangling.h"
-#include "EmbeddedWebView.h"
-#include "ExternalElementsWidget.h"
-#include "PartWidgetFactory.h"
-#include "SimplePartWidget.h"
-#include "TagListWidget.h"
-#include "UserAgentWebPage.h"
-#include "Window.h"
-#include "ComposeWidget.h"
-
+#include "Cryptography/MessageModel.h"
+#include "Gui/MessageView.h"
+#include "Gui/ComposeWidget.h"
+#include "Gui/EnvelopeView.h"
+#include "Gui/ExternalElementsWidget.h"
+#include "Gui/OverlayWidget.h"
+#include "Gui/PartWidgetFactoryVisitor.h"
+#include "Gui/ShortcutHandler/ShortcutHandler.h"
+#include "Gui/SimplePartWidget.h"
+#include "Gui/Spinner.h"
+#include "Gui/TagListWidget.h"
+#include "Gui/UserAgentWebPage.h"
+#include "Gui/Window.h"
 #include "Imap/Model/MailboxTree.h"
 #include "Imap/Model/MsgListModel.h"
+#include "Imap/Model/NetworkWatcher.h"
+#include "Imap/Model/Utils.h"
 #include "Imap/Network/MsgPartNetAccessManager.h"
+#include "Plugins/PluginManager.h"
+#include "UiUtils/IconLoader.h"
 
 namespace Gui
 {
 
-MessageView::MessageView(QWidget *parent): QWidget(parent)
+MessageView::MessageView(QWidget *parent, QSettings *settings, Plugins::PluginManager *pluginManager)
+    : QWidget(parent)
+    , m_stack(new QStackedLayout(this))
+    , messageModel(0)
+    , netAccess(new Imap::Network::MsgPartNetAccessManager(this))
+    , factory(new PartWidgetFactory(netAccess, this,
+                                    std::unique_ptr<PartWidgetFactoryVisitor>(new PartWidgetFactoryVisitor())))
+    , m_settings(settings)
+    , m_pluginManager(pluginManager)
 {
-    QPalette pal = palette();
-    pal.setColor(backgroundRole(), palette().color(QPalette::Active, QPalette::Base));
-    pal.setColor(foregroundRole(), palette().color(QPalette::Active, QPalette::Text));
-    setPalette(pal);
+    connect(netAccess, &Imap::Network::MsgPartNetAccessManager::requestingExternal, this, &MessageView::externalsRequested);
+
+
+    setBackgroundRole(QPalette::Base);
+    setForegroundRole(QPalette::Text);
     setAutoFillBackground(true);
     setFocusPolicy(Qt::StrongFocus); // not by the wheel
-    netAccess = new Imap::Network::MsgPartNetAccessManager(this);
-    connect(netAccess, SIGNAL(requestingExternal(QUrl)), this, SLOT(externalsRequested(QUrl)));
-    factory = new PartWidgetFactory(netAccess, this, this);
 
-    emptyView = new EmbeddedWebView(this, new QNetworkAccessManager(this));
-    emptyView->setFixedSize(450,300);
-    QMetaObject::invokeMethod(emptyView, "handlePageLoadFinished", Qt::QueuedConnection, Q_ARG(bool, true));
-    emptyView->setPage(new UserAgentWebPage(emptyView));
-    emptyView->installEventFilter(this);
-    emptyView->setAutoFillBackground(false);
 
-    viewer = emptyView;
+    m_zoomIn = ShortcutHandler::instance()->createAction(QStringLiteral("action_zoom_in"), this);
+    addAction(m_zoomIn);
+    connect(m_zoomIn, &QAction::triggered, this, &MessageView::zoomIn);
 
-    //BEGIN create header section
+    m_zoomOut = ShortcutHandler::instance()->createAction(QStringLiteral("action_zoom_out"), this);
+    addAction(m_zoomOut);
+    connect(m_zoomOut, &QAction::triggered, this, &MessageView::zoomOut);
 
-    headerSection = new QWidget(this);
+    m_zoomOriginal = ShortcutHandler::instance()->createAction(QStringLiteral("action_zoom_original"), this);
+    addAction(m_zoomOriginal);
+    connect(m_zoomOriginal, &QAction::triggered, this, &MessageView::zoomOriginal);
 
-    // we create a dummy header, pass it through the style and the use it's color roles so we
-    // know what headers in general look like in the system
-    QHeaderView helpingHeader(Qt::Horizontal);
-    helpingHeader.ensurePolished();
-    pal = headerSection->palette();
-    pal.setColor(headerSection->backgroundRole(), palette().color(QPalette::Active, helpingHeader.backgroundRole()));
-    pal.setColor(headerSection->foregroundRole(), palette().color(QPalette::Active, helpingHeader.foregroundRole()));
-    headerSection->setPalette(pal);
-    headerSection->setAutoFillBackground(true);
 
-    // the actual mail header
-    header = new QLabel(headerSection);
-    header->setBackgroundRole(helpingHeader.backgroundRole());
-    header->setForegroundRole(helpingHeader.foregroundRole());
-    header->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
-    header->setIndent(5);
-    header->setWordWrap(true);
-    connect(header, SIGNAL(linkHovered(QString)), this, SLOT(linkInTitleHovered(QString)));
-    connect(header, SIGNAL(linkActivated(QString)), this, SLOT(headerLinkActivated(QString)));
+    // The homepage widget -- our poor man's splashscreen
+    m_homePage = new EmbeddedWebView(this, new QNetworkAccessManager(this));
+    m_homePage->setFixedSize(450,300);
+    CALL_LATER_NOARG(m_homePage, handlePageLoadFinished);
+    m_homePage->setPage(new UserAgentWebPage(m_homePage));
+    m_homePage->installEventFilter(this);
+    m_homePage->setAutoFillBackground(false);
+    m_stack->addWidget(m_homePage);
 
-    // the tag bar
-    tags = new TagListWidget(headerSection);
-    tags->setBackgroundRole(helpingHeader.backgroundRole());
-    tags->setForegroundRole(helpingHeader.foregroundRole());
-    tags->hide();
-    connect(tags, SIGNAL(tagAdded(QString)), this, SLOT(newLabelAction(QString)));
-    connect(tags, SIGNAL(tagRemoved(QString)), this, SLOT(deleteLabelAction(QString)));
 
-    // whether we allow to load external elements
+    // The actual widget for the actual message
+    m_messageWidget = new QWidget(this);
+    auto fullMsgLayout = new QVBoxLayout(m_messageWidget);
+    m_stack->addWidget(m_messageWidget);
+
+    m_envelope = new EnvelopeView(m_messageWidget, this);
+    fullMsgLayout->addWidget(m_envelope, 1);
+
+    tags = new TagListWidget(m_messageWidget);
+    connect(tags, &TagListWidget::tagAdded, this, &MessageView::newLabelAction);
+    connect(tags, &TagListWidget::tagRemoved, this, &MessageView::deleteLabelAction);
+    fullMsgLayout->addWidget(tags, 3);
+
     externalElements = new ExternalElementsWidget(this);
     externalElements->hide();
-    connect(externalElements, SIGNAL(loadingEnabled()), this, SLOT(externalsEnabled()));
-
-    // layout the header
-    layout = new QVBoxLayout(headerSection);
-    layout->addWidget(header, 1);
-    layout->addWidget(tags, 3);
-    layout->addWidget(externalElements, 1);
-
-    //END create header section
-
-    //BEGIN layout the message
-
-    layout = new QVBoxLayout(this);
-    layout->setSpacing(0);
-    layout->setContentsMargins(0,0,0,0);
-
-    layout->addWidget(headerSection, 1);
-
-    headerSection->hide();
+    connect(externalElements, &ExternalElementsWidget::loadingEnabled, this, &MessageView::enableExternalData);
+    fullMsgLayout->addWidget(externalElements, 1);
 
     // put the actual messages into an extra horizontal view
     // this allows us easy usage of the trailing stretch and also to indent the message a bit
-    QHBoxLayout *hLayout = new QHBoxLayout;
-    hLayout->setContentsMargins(6,6,6,0);
-    hLayout->addWidget(viewer);
-    static_cast<QVBoxLayout*>(layout)->addLayout(hLayout, 1);
+    m_msgLayout = new QHBoxLayout;
+    m_msgLayout->setContentsMargins(6,6,6,0);
+    fullMsgLayout->addLayout(m_msgLayout, 1);
     // add a strong stretch to squeeze header and message to the top
     // possibly passing a large stretch factor to the message could be enough...
-    layout->addStretch(1000);
+    fullMsgLayout->addStretch(1000);
 
-    //END layout the message
-
-    // make the layout used to add messages our new horizontal layout
-    layout = hLayout;
 
     markAsReadTimer = new QTimer(this);
     markAsReadTimer->setSingleShot(true);
-    connect(markAsReadTimer, SIGNAL(timeout()), this, SLOT(markAsRead()));
+    connect(markAsReadTimer, &QTimer::timeout, this, &MessageView::markAsRead);
+
+    m_loadingSpinner = new Spinner(this);
+    m_loadingSpinner->setText(tr("Fetching\nMessage"));
+    m_loadingSpinner->setType(Spinner::Sun);
 }
 
 MessageView::~MessageView()
@@ -159,91 +140,143 @@ MessageView::~MessageView()
     // QNetworkReply instances created by that manager. When the destruction goes to the WebKit objects, they try to disconnect
     // from the network replies which are however gone already. We can mitigate that by simply making sure that the destruction
     // starts with the QWebView subclasses and only after that proceeds to the QNAM. Qt's default order leads to segfaults here.
-    if (viewer != emptyView) {
-        delete viewer;
-    }
-    delete emptyView;
+    unsetPreviousMessage();
+}
 
-    delete factory;
+void MessageView::unsetPreviousMessage()
+{
+    clearWaitingConns();
+    m_loadingItems.clear();
+    message = QModelIndex();
+    markAsReadTimer->stop();
+    if (auto w = bodyWidget()) {
+        m_stack->removeWidget(dynamic_cast<QWidget *>(w));
+        delete w;
+    }
+    m_envelope->setMessage(QModelIndex());
+    delete messageModel;
+    messageModel = nullptr;
 }
 
 void MessageView::setEmpty()
 {
-    markAsReadTimer->stop();
-    header->setText(QString());
-    headerSection->hide();
-    message = QModelIndex();
-    disconnect(this, SLOT(handleDataChanged(QModelIndex,QModelIndex)));
-    tags->hide();
-    if (viewer != emptyView) {
-        layout->removeWidget(viewer);
-        viewer->deleteLater();
-        viewer = emptyView;
-        viewer->show();
-        layout->addWidget(viewer);
-        emit messageChanged();
+    unsetPreviousMessage();
+    m_loadingSpinner->stop();
+    m_stack->setCurrentWidget(m_homePage);
+    emit messageChanged();
+}
+
+AbstractPartWidget *MessageView::bodyWidget() const
+{
+    if (m_msgLayout->itemAt(0) && m_msgLayout->itemAt(0)->widget()) {
+        return dynamic_cast<AbstractPartWidget *>(m_msgLayout->itemAt(0)->widget());
+    } else {
+        return nullptr;
     }
 }
 
 void MessageView::setMessage(const QModelIndex &index)
 {
-    // first, let's get a real model
-    QModelIndex messageIndex;
-    const Imap::Mailbox::Model *constModel = 0;
-    Imap::Mailbox::TreeItem *item = Imap::Mailbox::Model::realTreeItem(index, &constModel, &messageIndex);
-    Q_ASSERT(item); // Make sure it's a message
+    Q_ASSERT(index.isValid());
+    QModelIndex messageIndex = Imap::deproxifiedIndex(index);
     Q_ASSERT(messageIndex.isValid());
-    Imap::Mailbox::Model *realModel = const_cast<Imap::Mailbox::Model *>(constModel);
-    Q_ASSERT(realModel);
 
-    // The data might be available from the local cache, so let's try to save a possible roundtrip here
-    item->fetch(realModel);
-
-    if (!messageIndex.data(Imap::Mailbox::RoleIsFetched).toBool()) {
-        // This happens when the message placeholder is already available in the GUI, but the actual message data haven't been
-        // loaded yet. This is especially common with the threading model.
-        // Note that the data might be already available in the cache, it's just that it isn't in the mailbox tree yet.
-        setEmpty();
-        connect(realModel, SIGNAL(dataChanged(QModelIndex,QModelIndex)), this, SLOT(handleDataChanged(QModelIndex,QModelIndex)));
-        message = messageIndex;
+    if (message == messageIndex) {
+        // This is a duplicate call, let's do nothing.
+        // It might not be our fat-fingered user, but also just a side-effect of our duplicate invocation through
+        // QAbstractItemView::clicked() and activated().
         return;
     }
 
-    QModelIndex rootPartIndex = messageIndex.child(0, 0);
+    unsetPreviousMessage();
 
-    headerSection->show();
-    if (message != messageIndex) {
-        emptyView->hide();
-        layout->removeWidget(viewer);
-        if (viewer != emptyView) {
-            viewer->setParent(0);
-            viewer->deleteLater();
-        }
-        message = messageIndex;
-        netAccess->setExternalsEnabled(false);
-        externalElements->hide();
+    message = messageIndex;
+    messageModel = new Cryptography::MessageModel(this, message);
+    messageModel->setObjectName(QStringLiteral("cryptoMessageModel-%1-%2")
+                                .arg(message.data(Imap::Mailbox::RoleMailboxName).toString(),
+                                     message.data(Imap::Mailbox::RoleMessageUid).toString()));
+    for (const auto &module: m_pluginManager->mimePartReplacers()) {
+        messageModel->registerPartHandler(module);
+    }
+    emit messageModelChanged(messageModel);
 
-        netAccess->setModelMessage(message);
+    // The data might be available from the local cache, so let's try to save a possible roundtrip here
+    // by explicitly requesting the data
+    message.data(Imap::Mailbox::RolePartData);
 
-        viewer = factory->create(rootPartIndex);
-        viewer->setParent(this);
-        layout->addWidget(viewer);
-        viewer->show();
-        header->setText(headerText());
+    if (!message.data(Imap::Mailbox::RoleIsFetched).toBool()) {
+        // This happens when the message placeholder is already available in the GUI, but the actual message data haven't been
+        // loaded yet. This is especially common with the threading model, but also with bigger unsynced mailboxes.
+        // Note that the data might be already available in the cache, it's just that it isn't in the mailbox tree yet.
+        m_waitingMessageConns.emplace_back(
+                    connect(messageModel, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex &topLeft){
+            if (topLeft.data(Imap::Mailbox::RoleIsFetched).toBool()) {
+                // OK, message is fully fetched now
+                showMessageNow();
+            }
+        }));
+        m_loadingSpinner->setText(tr("Waiting\nfor\nMessage..."));
+        m_loadingSpinner->start();
+    } else {
+        showMessageNow();
+    }
+}
 
-        tags->show();
-        tags->setTagList(messageIndex.data(Imap::Mailbox::RoleMessageFlags).toStringList());
-        disconnect(this, SLOT(handleDataChanged(QModelIndex,QModelIndex)));
-        connect(realModel, SIGNAL(dataChanged(QModelIndex,QModelIndex)), this, SLOT(handleDataChanged(QModelIndex,QModelIndex)));
+/** @short Implementation of the "hey, let's really display the message, its BODYSTRUCTURE is available now" */
+void MessageView::showMessageNow()
+{
+    Q_ASSERT(message.data(Imap::Mailbox::RoleIsFetched).toBool());
 
-        emit messageChanged();
+    clearWaitingConns();
 
-        // We want to propagate the QWheelEvent to upper layers
-        viewer->installEventFilter(this);
+    QModelIndex rootPartIndex = messageModel->index(0,0);
+    Q_ASSERT(rootPartIndex.child(0,0).isValid());
+
+    netAccess->setExternalsEnabled(false);
+    externalElements->hide();
+
+    netAccess->setModelMessage(rootPartIndex);
+
+    m_loadingItems.clear();
+    m_loadingSpinner->stop();
+
+    m_envelope->setMessage(message);
+
+    auto updateTagList = [this]() {
+        tags->setTagList(message.data(Imap::Mailbox::RoleMessageFlags).toStringList());
+    };
+    connect(messageModel, &QAbstractItemModel::dataChanged, this, updateTagList);
+    updateTagList();
+
+    UiUtils::PartLoadingOptions loadingMode;
+    if (m_settings->value(Common::SettingsNames::guiPreferPlaintextRendering, QVariant(true)).toBool())
+        loadingMode |= UiUtils::PART_PREFER_PLAINTEXT_OVER_HTML;
+    auto viewer = factory->walk(rootPartIndex.child(0,0), 0, loadingMode);
+    viewer->setParent(this);
+    m_msgLayout->addWidget(viewer);
+    m_msgLayout->setAlignment(viewer, Qt::AlignTop|Qt::AlignLeft);
+    viewer->show();
+    // We want to propagate the QWheelEvent to upper layers
+    viewer->installEventFilter(this);
+    m_stack->setCurrentWidget(m_messageWidget);
+
+    if (m_netWatcher && m_netWatcher->effectiveNetworkPolicy() != Imap::Mailbox::NETWORK_OFFLINE
+            && m_settings->value(Common::SettingsNames::autoMarkReadEnabled, QVariant(true)).toBool()) {
+        // No additional delay is needed here because the MsgListView won't open a message while the user keeps scrolling,
+        // which was AFAIK the original intention
+        markAsReadTimer->start(m_settings->value(Common::SettingsNames::autoMarkReadSeconds, QVariant(0)).toUInt() * 1000);
     }
 
-    if (realModel->isNetworkAvailable())
-        markAsReadTimer->start(200); // FIXME: make this configurable
+    emit messageChanged();
+}
+
+/** @short There's no point in waiting for the message to appear */
+void MessageView::clearWaitingConns()
+{
+    for (auto &conn: m_waitingMessageConns) {
+        disconnect(conn);
+    }
+    m_waitingMessageConns.clear();
 }
 
 void MessageView::markAsRead()
@@ -258,15 +291,34 @@ void MessageView::markAsRead()
         model->markMessagesRead(QModelIndexList() << message, Imap::Mailbox::FLAG_ADD);
 }
 
+/** @short Inhibit the automatic marking of the current message as already read
+
+The user might have e.g. explicitly marked a previously read message as unread again immediately after navigating back to it
+in the message listing. In that situation, the message viewer shall respect this decision and inhibit the helper which would
+otherwise mark the current message as read after a short timeout.
+*/
+void MessageView::stopAutoMarkAsRead()
+{
+    markAsReadTimer->stop();
+}
+
 bool MessageView::eventFilter(QObject *object, QEvent *event)
 {
     if (event->type() == QEvent::Wheel) {
-        // while the containing scrollview has Qt::StrongFocus, the event forwarding breaks that
-        // -> completely disable focus for the following wheel event ...
-        parentWidget()->setFocusPolicy(Qt::NoFocus);
-        MessageView::event(event);
-        // ... set reset it
-        parentWidget()->setFocusPolicy(Qt::StrongFocus);
+        if (static_cast<QWheelEvent *>(event)->modifiers() == Qt::ControlModifier) {
+            if (static_cast<QWheelEvent *>(event)->delta() > 0) {
+                zoomIn();
+            } else {
+                zoomOut();
+            }
+        } else {
+            // while the containing scrollview has Qt::StrongFocus, the event forwarding breaks that
+            // -> completely disable focus for the following wheel event ...
+            parentWidget()->setFocusPolicy(Qt::NoFocus);
+            MessageView::event(event);
+            // ... set reset it
+            parentWidget()->setFocusPolicy(Qt::StrongFocus);
+        }
         return true;
     } else if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
         QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
@@ -277,10 +329,11 @@ bool MessageView::eventFilter(QObject *object, QEvent *event)
         case Qt::Key_Down:
         case Qt::Key_PageUp:
         case Qt::Key_PageDown:
-        case Qt::Key_Home:
-        case Qt::Key_End:
             MessageView::event(event);
             return true;
+        case Qt::Key_Home:
+        case Qt::Key_End:
+            return false;
         default:
             return QObject::eventFilter(object, event);
         }
@@ -289,126 +342,11 @@ bool MessageView::eventFilter(QObject *object, QEvent *event)
     }
 }
 
-Imap::Message::Envelope MessageView::envelope() const
-{
-    // Accessing the envelope via QVariant is just too much work here; it's way easier to just get the raw pointer
-    Imap::Mailbox::Model *model = dynamic_cast<Imap::Mailbox::Model *>(const_cast<QAbstractItemModel *>(message.model()));
-    Imap::Mailbox::TreeItemMessage *messagePtr = dynamic_cast<Imap::Mailbox::TreeItemMessage *>(static_cast<Imap::Mailbox::TreeItem *>(message.internalPointer()));
-    return messagePtr->envelope(model);
-}
-
-QString MessageView::headerText()
-{
-    if (!message.isValid())
-        return QString();
-
-    const Imap::Message::Envelope &e = envelope();
-
-    QString res;
-    if (!e.from.isEmpty())
-        res += tr("<b>From:</b>&nbsp;%1<br/>").arg(Imap::Message::MailAddress::prettyList(e.from, Imap::Message::MailAddress::FORMAT_CLICKABLE));
-    if (!e.sender.isEmpty() && e.sender != e.from)
-        res += tr("<b>Sender:</b>&nbsp;%1<br/>").arg(Imap::Message::MailAddress::prettyList(e.sender, Imap::Message::MailAddress::FORMAT_CLICKABLE));
-    if (!e.replyTo.isEmpty() && e.replyTo != e.from)
-        res += tr("<b>Reply-To:</b>&nbsp;%1<br/>").arg(Imap::Message::MailAddress::prettyList(e.replyTo, Imap::Message::MailAddress::FORMAT_CLICKABLE));
-    QVariantList headerListPost = message.data(Imap::Mailbox::RoleMessageHeaderListPost).toList();
-    if (!headerListPost.isEmpty()) {
-        QStringList buf;
-        Q_FOREACH(const QVariant &item, headerListPost) {
-            const QString scheme = item.toUrl().scheme().toLower();
-            if (scheme == QLatin1String("http") || scheme == QLatin1String("https") || scheme == QLatin1String("mailto")) {
-                QString target = item.toUrl().toString();
-                QString caption = item.toUrl().toString(scheme == QLatin1String("mailto") ? QUrl::RemoveScheme : QUrl::None);
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-                target = Qt::escape(target);
-                caption = Qt::escape(caption);
-#else
-                target = target.toHtmlEscaped();
-                caption = caption.toHtmlEscaped();
-#endif
-                buf << tr("<a href=\"%1\">%2</a>").arg(target, caption);
-            } else {
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-                buf << Qt::escape(item.toUrl().toString());
-#else
-                buf << item.toUrl().toString().toHtmlEscaped();
-#endif
-            }
-        }
-        res += tr("<b>List-Post:</b>&nbsp;%1<br/>").arg(buf.join(tr(", ")));
-    }
-    if (!e.to.isEmpty())
-        res += tr("<b>To:</b>&nbsp;%1<br/>").arg(Imap::Message::MailAddress::prettyList(e.to, Imap::Message::MailAddress::FORMAT_CLICKABLE));
-    if (!e.cc.isEmpty())
-        res += tr("<b>Cc:</b>&nbsp;%1<br/>").arg(Imap::Message::MailAddress::prettyList(e.cc, Imap::Message::MailAddress::FORMAT_CLICKABLE));
-    if (!e.bcc.isEmpty())
-        res += tr("<b>Bcc:</b>&nbsp;%1<br/>").arg(Imap::Message::MailAddress::prettyList(e.bcc, Imap::Message::MailAddress::FORMAT_CLICKABLE));
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    res += tr("<b>Subject:</b>&nbsp;%1").arg(Qt::escape(e.subject));
-#else
-    res += tr("<b>Subject:</b>&nbsp;%1").arg(e.subject.toHtmlEscaped());
-#endif
-    if (e.date.isValid())
-        res += tr("<br/><b>Date:</b>&nbsp;%1").arg(e.date.toLocalTime().toString(Qt::SystemLocaleLongDate));
-    return res;
-}
-
 QString MessageView::quoteText() const
 {
-    if (const AbstractPartWidget *w = dynamic_cast<const AbstractPartWidget *>(viewer)) {
-        QStringList quote;
-        QStringList lines = w->quoteMe().split('\n');
-        for (QStringList::iterator line = lines.begin(); line != lines.end(); ++line) {
-            if (*line == QLatin1String("-- ")) {
-                // This is the signature separator, we should not include anything below that in the quote
-                break;
-            }
-            // rewrap - we need to keep the quotes at < 79 chars, yet the grow with every level
-            if (line->length() < 79-2) {
-                // this line is short enough, prepend quote mark and continue
-                if (line->isEmpty() || line->at(0) == '>')
-                    line->prepend(">");
-                else
-                    line->prepend("> ");
-                quote << *line;
-                continue;
-            }
-            // long line -> needs to be wrapped
-            // 1st, detect the quote depth and eventually stript the quotes from the line
-            int quoteLevel = 0;
-            int contentStart = 0;
-            if (line->at(0) == '>') {
-                quoteLevel = 1;
-                while (quoteLevel < line->length() && line->at(quoteLevel) == '>')
-                    ++quoteLevel;
-                contentStart = quoteLevel;
-                if (quoteLevel < line->length() && line->at(quoteLevel) == ' ')
-                    ++contentStart;
-            }
-
-            // 2nd, build a qute string
-            QString quotemarks;
-            for (int i = 0; i < quoteLevel; ++i)
-                quotemarks += ">";
-            quotemarks += "> ";
-
-            // 3rd, wrap the line, prepend the quotemarks to each line and add it to the quote text
-            int space(contentStart), lastSpace(contentStart), pos(contentStart), length(0);
-            while (pos < line->length()) {
-                if (line->at(pos) == ' ')
-                    space = pos+1;
-                ++length;
-                if (length > 65-quotemarks.length() && space != lastSpace) {
-                    // wrap
-                    quote << quotemarks + line->mid(lastSpace, space - lastSpace);
-                    lastSpace = space;
-                    length = pos - space;
-                }
-                ++pos;
-            }
-            quote << quotemarks + line->mid(lastSpace);
-        }
-        const Imap::Message::Envelope &e = envelope();
+    if (auto w = bodyWidget()) {
+        QStringList quote = Composer::quoteText(w->quoteMe().split(QLatin1Char('\n')));
+        const Imap::Message::Envelope &e = message.data(Imap::Mailbox::RoleMessageEnvelope).value<Imap::Message::Envelope>();
         QString sender;
         if (!e.from.isEmpty())
             sender = e.from[0].prettyName(Imap::Message::MailAddress::FORMAT_JUST_NAME);
@@ -418,9 +356,26 @@ QString MessageView::quoteText() const
         // One extra newline at the end of the quoted text to separate the response
         quote << QString();
 
-        return tr("On %1, %2 wrote:\n").arg(e.date.toLocalTime().toString(Qt::SystemLocaleLongDate)).arg(sender) + quote.join("\n");
+        return tr("On %1, %2 wrote:\n").arg(e.date.toLocalTime().toString(Qt::SystemLocaleLongDate), sender) + quote.join(QStringLiteral("\n"));
     }
     return QString();
+}
+
+#define FORWARD_METHOD(METHOD) \
+void MessageView::METHOD() \
+{ \
+    if (auto w = bodyWidget()) { \
+        w->METHOD(); \
+    } \
+}
+FORWARD_METHOD(zoomIn)
+FORWARD_METHOD(zoomOut)
+FORWARD_METHOD(zoomOriginal)
+
+void MessageView::setNetworkWatcher(Imap::Mailbox::NetworkWatcher *netWatcher)
+{
+    m_netWatcher = netWatcher;
+    factory->setNetworkWatcher(netWatcher);
 }
 
 void MessageView::reply(MainWindow *mainWindow, Composer::ReplyMode mode)
@@ -428,34 +383,37 @@ void MessageView::reply(MainWindow *mainWindow, Composer::ReplyMode mode)
     if (!message.isValid())
         return;
 
+    // The Message-Id of the original message might have been empty; be sure we can handle that
     QByteArray messageId = message.data(Imap::Mailbox::RoleMessageMessageId).toByteArray();
-
-    ComposeWidget *w = mainWindow->invokeComposeDialog(
-                Composer::Util::replySubject(message.data(Imap::Mailbox::RoleMessageSubject).toString()), quoteText(),
-                QList<QPair<Composer::RecipientKind,QString> >(),
-                QList<QByteArray>() << messageId,
-                message.data(Imap::Mailbox::RoleMessageHeaderReferences).value<QList<QByteArray> >() << messageId,
-                message
-                );
-
-    bool ok = w->setReplyMode(mode);
-    if (!ok) {
-        QString err;
-        switch (mode) {
-        case Composer::REPLY_ALL:
-            // do nothing
-            break;
-        case Composer::REPLY_LIST:
-            err = tr("It doesn't look like this is a message to the mailing list. Please file in the recipients manually.");
-            break;
-        case Composer::REPLY_PRIVATE:
-            err = trUtf8("Trojitá was unable to safely determine the real e-mail address of the author of the message. "
-                         "You might want to use the \"Reply All\" function and trim the list of addresses manually.");
-            break;
-        }
-        if (!err.isEmpty())
-            QMessageBox::warning(w, tr("Cannot Determine Recipients"), err);
+    QList<QByteArray> messageIdList;
+    if (!messageId.isEmpty()) {
+        messageIdList.append(messageId);
     }
+
+    ComposeWidget::warnIfMsaNotConfigured(
+                ComposeWidget::createReply(mainWindow, mode, message, QList<QPair<Composer::RecipientKind,QString> >(),
+                                           Composer::Util::replySubject(message.data(Imap::Mailbox::RoleMessageSubject).toString()),
+                                           quoteText(), messageIdList,
+                                           message.data(Imap::Mailbox::RoleMessageHeaderReferences).value<QList<QByteArray> >() + messageIdList),
+                mainWindow);
+}
+
+void MessageView::forward(MainWindow *mainWindow, const Composer::ForwardMode mode)
+{
+    if (!message.isValid())
+        return;
+
+    // The Message-Id of the original message might have been empty; be sure we can handle that
+    QByteArray messageId = message.data(Imap::Mailbox::RoleMessageMessageId).toByteArray();
+    QList<QByteArray> messageIdList;
+    if (!messageId.isEmpty()) {
+        messageIdList.append(messageId);
+    }
+
+    ComposeWidget::warnIfMsaNotConfigured(
+                ComposeWidget::createForward(mainWindow, mode, message, Composer::Util::forwardSubject(message.data(Imap::Mailbox::RoleMessageSubject).toString()),
+                                             messageIdList, message.data(Imap::Mailbox::RoleMessageHeaderReferences).value<QList<QByteArray>>() + messageIdList),
+                mainWindow);
 }
 
 void MessageView::externalsRequested(const QUrl &url)
@@ -464,40 +422,13 @@ void MessageView::externalsRequested(const QUrl &url)
     externalElements->show();
 }
 
-void MessageView::externalsEnabled()
+void MessageView::enableExternalData()
 {
     netAccess->setExternalsEnabled(true);
     externalElements->hide();
-    AbstractPartWidget *w = dynamic_cast<AbstractPartWidget *>(viewer);
-    if (w)
+    if (auto w = bodyWidget()) {
         w->reloadContents();
-}
-
-void MessageView::linkInTitleHovered(const QString &target)
-{
-    QUrl url(target);
-
-    if (target.isEmpty() || url.scheme().toLower() != QLatin1String("mailto")) {
-        header->setToolTip(QString());
-        return;
     }
-
-    QString frontOfAtSign, afterAtSign;
-    if (url.path().indexOf(QLatin1String("@")) != -1) {
-        QStringList chunks = url.path().split(QLatin1String("@"));
-        frontOfAtSign = chunks[0];
-        afterAtSign = QStringList(chunks.mid(1)).join(QLatin1String("@"));
-    }
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    Imap::Message::MailAddress addr(url.queryItemValue(QLatin1String("X-Trojita-DisplayName")), QString(),
-                                    frontOfAtSign, afterAtSign);
-    header->setToolTip(Qt::escape(addr.prettyName(Imap::Message::MailAddress::FORMAT_READABLE)));
-#else
-    QUrlQuery q(url);
-    Imap::Message::MailAddress addr(q.queryItemValue(QLatin1String("X-Trojita-DisplayName")), QString(),
-                                    frontOfAtSign, afterAtSign);
-    header->setToolTip(addr.prettyName(Imap::Message::MailAddress::FORMAT_READABLE).toHtmlEscaped());
-#endif
 }
 
 void MessageView::newLabelAction(const QString &tag)
@@ -518,22 +449,9 @@ void MessageView::deleteLabelAction(const QString &tag)
     model->setMessageFlags(QModelIndexList() << message, tag, Imap::Mailbox::FLAG_REMOVE);
 }
 
-void MessageView::handleDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight)
-{
-    Q_ASSERT(topLeft.row() == bottomRight.row() && topLeft.parent() == bottomRight.parent());
-    if (topLeft == message) {
-        if (viewer == emptyView && message.data(Imap::Mailbox::RoleIsFetched).toBool()) {
-            qDebug() << "MessageView: message which was previously not loaded has just became available";
-            setEmpty();
-            setMessage(topLeft);
-        }
-        tags->setTagList(message.data(Imap::Mailbox::RoleMessageFlags).toStringList());
-    }
-}
-
 void MessageView::setHomepageUrl(const QUrl &homepage)
 {
-    emptyView->load(homepage);
+    m_homePage->load(homepage);
 }
 
 void MessageView::showEvent(QShowEvent *se)
@@ -544,23 +462,11 @@ void MessageView::showEvent(QShowEvent *se)
     setAutoFillBackground(true);
 }
 
-void MessageView::headerLinkActivated(QString s)
-{
-    // Trojita is registered to handle any mailto: URL
-    QDesktopServices::openUrl(QUrl(s));
-}
-
 void MessageView::partContextMenuRequested(const QPoint &point)
 {
     if (SimplePartWidget *w = qobject_cast<SimplePartWidget *>(sender())) {
         QMenu menu(w);
-        Q_FOREACH(QAction *action, w->contextMenuSpecificActions())
-            menu.addAction(action);
-        menu.addAction(w->pageAction(QWebPage::SelectAll));
-        if (!w->page()->mainFrame()->hitTestContent(point).linkUrl().isEmpty()) {
-            menu.addSeparator();
-            menu.addAction(w->pageAction(QWebPage::CopyLinkToClipboard));
-        }
+        w->buildContextMenu(point, menu);
         menu.exec(w->mapToGlobal(point));
     }
 }
@@ -572,9 +478,39 @@ void MessageView::partLinkHovered(const QString &link, const QString &title, con
     emit linkHovered(link);
 }
 
+void MessageView::triggerSearchDialog()
+{
+    emit searchRequestedBy(qobject_cast<EmbeddedWebView*>(sender()));
+}
+
 QModelIndex MessageView::currentMessage() const
 {
     return message;
+}
+
+void MessageView::onWebViewLoadStarted()
+{
+    QWebView *wv = qobject_cast<QWebView*>(sender());
+    Q_ASSERT(wv);
+
+    if (m_netWatcher && m_netWatcher->effectiveNetworkPolicy() != Imap::Mailbox::NETWORK_OFFLINE) {
+        m_loadingItems << wv;
+        m_loadingSpinner->start(250);
+    }
+}
+
+void MessageView::onWebViewLoadFinished()
+{
+    QWebView *wv = qobject_cast<QWebView*>(sender());
+    Q_ASSERT(wv);
+    m_loadingItems.remove(wv);
+    if (m_loadingItems.isEmpty())
+        m_loadingSpinner->stop();
+}
+
+Plugins::PluginManager *MessageView::pluginManager() const
+{
+    return m_pluginManager;
 }
 
 }

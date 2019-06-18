@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -26,6 +26,7 @@
 #include "ItemRoles.h"
 #include "Model.h"
 #include "SubtreeModel.h"
+#include "Imap/Network/MsgPartNetAccessManager.h"
 
 namespace Imap
 {
@@ -36,10 +37,10 @@ OneMessageModel::OneMessageModel(Model *model): QObject(model), m_subtree(0)
 {
     m_subtree = new SubtreeModelOfModel(this);
     m_subtree->setSourceModel(model);
-    connect(m_subtree, SIGNAL(modelReset()), this, SIGNAL(envelopeChanged()));
-    connect(m_subtree, SIGNAL(dataChanged(QModelIndex,QModelIndex)), this, SIGNAL(envelopeChanged()));
-    connect(this, SIGNAL(envelopeChanged()), this, SIGNAL(flagsChanged()));
-    connect(model, SIGNAL(dataChanged(QModelIndex,QModelIndex)), this, SLOT(handleModelDataChanged(QModelIndex,QModelIndex)));
+    connect(m_subtree, &QAbstractItemModel::modelReset, this, &OneMessageModel::envelopeChanged);
+    connect(m_subtree, &QAbstractItemModel::dataChanged, this, &OneMessageModel::envelopeChanged);
+    connect(this, &OneMessageModel::envelopeChanged, this, &OneMessageModel::flagsChanged);
+    connect(model, &QAbstractItemModel::dataChanged, this, &OneMessageModel::handleModelDataChanged);
     m_flatteningModel = new KDescendantsProxyModel(this);
     m_flatteningModel->setSourceModel(m_subtree);
     QHash<int, QByteArray> roleNames;
@@ -59,7 +60,7 @@ OneMessageModel::OneMessageModel(Model *model): QObject(model), m_subtree(0)
 
 void OneMessageModel::setMessage(const QString &mailbox, const uint uid)
 {
-    m_mainPartUrl = QUrl(QLatin1String("about:blank"));
+    m_mainPartUrl = QUrl(QStringLiteral("about:blank"));
     emit mainPartUrlChanged();
     QAbstractItemModel *abstractModel = qobject_cast<QAbstractItemModel*>(QObject::parent());
     Q_ASSERT(abstractModel);
@@ -176,6 +177,24 @@ bool OneMessageModel::isMarkedRecent() const
     return m_message.data(RoleMessageIsMarkedRecent).toBool();
 }
 
+bool OneMessageModel::isMarkedFlagged() const
+{
+    return m_message.data(RoleMessageIsMarkedFlagged).toBool();
+}
+
+bool OneMessageModel::isMarkedJunk() const
+{
+    return m_message.data(RoleMessageIsMarkedJunk).toBool() &&
+        !m_message.data(RoleMessageIsMarkedNotJunk).toBool();
+}
+
+bool OneMessageModel::isMarkedNotJunk() const
+{
+    return (m_message.data(RoleMessageIsMarkedNotJunk).toBool() &&
+        !m_message.data(RoleMessageIsMarkedJunk).toBool());
+}
+
+
 QUrl OneMessageModel::mainPartUrl() const
 {
     return m_mainPartUrl;
@@ -184,6 +203,12 @@ QUrl OneMessageModel::mainPartUrl() const
 QObject *OneMessageModel::attachmentsModel() const
 {
     return m_flatteningModel;
+}
+
+QModelIndex OneMessageModel::mainPartModelIndex()
+{
+    return Imap::Network::MsgPartNetAccessManager::pathToPart(
+                m_message, m_mainPartUrl.path().toUtf8());
 }
 
 void OneMessageModel::setMarkedDeleted(const bool marked)

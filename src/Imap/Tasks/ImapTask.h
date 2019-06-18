@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -29,6 +29,7 @@
 #include <QPointer>
 #include "Common/Logging.h"
 #include "../Parser/Parser.h"
+#include "../Model/FlagsOperation.h"
 
 namespace Imap
 {
@@ -44,7 +45,7 @@ Each ImapTask serves a distinct purpose; some of them are for establishing a con
 for updating FLAGS of some messages, other tasks maintain a given mailbox synchronized with the server's responses and yet others
 deal with listing mailboxes, to name a few examples.
 
-Each task signals its succesfull completion by the completed() signal.  Should the activity fail, failed() is emitted.
+Each task signals its successful completion by the completed() signal.  Should the activity fail, failed() is emitted.
 
 Some tasks perform activity which could be interrupted by the user without huge trouble, for example when downloading huge
 attachments.  Tasks which support this graceful abort shall do so when asked through the abort() method.
@@ -75,7 +76,7 @@ public:
     This function is really a hard requirement -- as soon as this function got called, it's an error for this task to talk to the
     parser at all.
     */
-    virtual void die();
+    virtual void die(const QString &message);
 
     /** @short Abort the current activity of this task in a safe manner
 
@@ -86,7 +87,7 @@ public:
 
     /** @short Another task wants to depend on this one
 
-    When this task finishes succesfully, the dependent task gets called.  If this task fails, the child task will not get called.
+    When this task finishes successfully, the dependent task gets called.  If this task fails, the child task will not get called.
     */
     virtual void addDependentTask(ImapTask *task);
     void updateParentTask(ImapTask *newParent);
@@ -141,7 +142,7 @@ protected:
     virtual void _failed(const QString &errorMessage);
 
     /** @short Kill all pending tasks that are waiting for this one to success */
-    virtual void killAllPendingTasks();
+    virtual void killAllPendingTasks(const QString &message);
 
     /** @short Get a debug logger associated with this task
 
@@ -164,7 +165,7 @@ private:
 signals:
     /** @short This signal is emitted if the job failed in some way */
     void failed(QString errorMessage);
-    /** @short This signal is emitted upon succesfull completion of a job */
+    /** @short This signal is emitted upon successful completion of a job */
     void completed(Imap::Mailbox::ImapTask *task);
 
 public:
@@ -172,7 +173,7 @@ public:
     QPointer<ImapTask> parentTask;
 
 protected:
-    Model *model;
+    QPointer<Model> model;
     QList<ImapTask *> dependentTasks;
     bool _finished;
     bool _dead;
@@ -187,11 +188,11 @@ protected:
 
 #define IMAP_TASK_CHECK_ABORT_DIE \
     if (_dead) {\
-        _failed("Asked to die");\
+        _failed(ImapTask::tr("Asked to die"));\
         return;\
     } \
     if (_aborted) {\
-        _failed("Aborted");\
+        _failed(ImapTask::tr("Aborted"));\
         return;\
     }
 
@@ -203,5 +204,7 @@ protected:
 
 }
 }
+
+Q_DECLARE_METATYPE(Imap::Mailbox::ImapTask *)
 
 #endif // IMAP_IMAPTASK_H

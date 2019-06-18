@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,14 +24,13 @@
 
 #include <QTextDocument>
 #include <QUrl>
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
 #include <QUrlQuery>
-#endif
 #include <QTextCodec>
 #include "MailAddress.h"
 #include "../Model/MailboxTree.h"
 #include "../Encoders.h"
 #include "../Parser/Rfc5322HeaderParser.h"
+#include "UiUtils/Formatting.h"
 
 namespace Imap
 {
@@ -113,39 +112,46 @@ MailAddress::MailAddress(const QVariantList &input, const QByteArray &line, cons
     host = Imap::decodeRFC2047String(input[3].toByteArray());
 }
 
+QUrl MailAddress::asUrl() const
+{
+    QUrl url;
+    url.setScheme(QStringLiteral("mailto"));
+    url.setPath(QStringLiteral("%1@%2").arg(mailbox, host));
+    if (!name.isEmpty()) {
+        QUrlQuery q(url);
+        q.addQueryItem(QStringLiteral("X-Trojita-DisplayName"), name);
+        url.setQuery(q);
+    }
+    return url;
+}
+
 QString MailAddress::prettyName(FormattingMode mode) const
 {
-    if (name.isEmpty() && mode == FORMAT_JUST_NAME)
+    bool hasNiceName = !name.isEmpty();
+
+    if (!hasNiceName && mode == FORMAT_JUST_NAME)
         mode = FORMAT_READABLE;
 
     if (mode == FORMAT_JUST_NAME) {
         return name;
     } else {
         QString address = mailbox + QLatin1Char('@') + host;
-        QString result;
         QString niceName;
-        if (name.isEmpty()) {
-            result = address;
-            niceName = address;
-        } else {
-            result = name + QLatin1String(" <") + address + QLatin1Char('>');
+        if (hasNiceName) {
             niceName = name;
+        } else {
+            niceName = address;
         }
         if (mode == FORMAT_READABLE) {
-            return result;
+            if (hasNiceName) {
+                return name + QLatin1String(" <") + address + QLatin1Char('>');
+            } else {
+                return address;
+            }
         } else {
-            QUrl target;
-            target.setScheme(QLatin1String("mailto"));
-            target.setPath(QString::fromUtf8("%1@%2").arg(mailbox, host));
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-            target.addQueryItem(QLatin1String("X-Trojita-DisplayName"), niceName);
-            return QString::fromUtf8("<a href=\"%1\">%2</a>").arg(Qt::escape(target.toString()), Qt::escape(niceName));
-#else
-            QUrlQuery q(target);
-            q.addQueryItem(QLatin1String("X-Trojita-DisplayName"), niceName);
-            target.setQuery(q);
-            return QString::fromUtf8("<a href=\"%1\">%2</a>").arg(target.toString().toHtmlEscaped(), niceName.toHtmlEscaped());
-#endif
+            if (mode == FORMAT_SHORT_CLICKABLE)
+                UiUtils::elideAddress(niceName);
+            return QStringLiteral("<a href=\"%1\">%2</a>").arg(asUrl().toString().toHtmlEscaped(), niceName.toHtmlEscaped());
         }
     }
 }
@@ -155,7 +161,7 @@ QString MailAddress::prettyList(const QList<MailAddress> &list, FormattingMode m
     QStringList buf;
     for (QList<MailAddress>::const_iterator it = list.begin(); it != list.end(); ++it)
         buf << it->prettyName(mode);
-    return buf.join(QLatin1String(", "));
+    return buf.join(QStringLiteral(", "));
 }
 
 QString MailAddress::prettyList(const QVariantList &list, FormattingMode mode)
@@ -168,7 +174,7 @@ QString MailAddress::prettyList(const QVariantList &list, FormattingMode mode)
         MailAddress a(item[0], item[1], item[2], item[3]);
         buf << a.prettyName(mode);
     }
-    return buf.join(QLatin1String(", "));
+    return buf.join(QStringLiteral(", "));
 }
 
 static QRegExp dotAtomRx(QLatin1String("[A-Za-z0-9!#$&'*+/=?^_`{}|~-]+(?:\\.[A-Za-z0-9!#$&'*+/=?^_`{}|~-]+)*"));
@@ -195,15 +201,15 @@ QByteArray MailAddress::asSMTPMailbox() const
            it's the best we can do. */
         result = Imap::quotedString(mailbox.toUtf8());
     }
-    
+
     result.append("@");
-    
+
     QByteArray domainpart;
 
     if (!(host.startsWith(QLatin1Char('[')) || host.endsWith(QLatin1Char(']')))) {
         /* IDN-encode the hostname part of the address */
         domainpart = QUrl::toAce(host);
-        
+
         /* TODO: QUrl::toAce() is documented to return an empty result if
            the string isn't a valid hostname --- for example, if it's a
            domain literal containing an IP address. In that case, we'll
@@ -213,7 +219,7 @@ QByteArray MailAddress::asSMTPMailbox() const
 
     if (domainpart.isEmpty()) {
         /* Either the domainpart looks like a domain-literal, or toAce() failed. */
-        
+
         domainpart = host.toUtf8();
         if (domainpart.startsWith('[')) {
             domainpart.remove(0, 1);
@@ -221,7 +227,7 @@ QByteArray MailAddress::asSMTPMailbox() const
         if (domainpart.endsWith(']')) {
             domainpart.remove(domainpart.size()-1, 1);
         }
-        
+
         result.append(Imap::quotedString(domainpart, Imap::SquareBrackets));
     } else {
         result.append(domainpart);
@@ -236,7 +242,7 @@ QByteArray MailAddress::asMailHeader() const
 
     if (!result.isEmpty())
         result.append(" ");
-    
+
     result.append("<");
     result.append(asSMTPMailbox());
     result.append(">");
@@ -248,8 +254,49 @@ QByteArray MailAddress::asMailHeader() const
 QString MailAddress::asPrettyString() const
 {
     return name.isEmpty() ?
-                asSMTPMailbox() :
-                name + QLatin1Char(' ') + QLatin1Char('<') + asSMTPMailbox() + QLatin1Char('>');
+                QString::fromUtf8(asSMTPMailbox()) :
+                name + QLatin1Char(' ') + QLatin1Char('<') + QString::fromUtf8(asSMTPMailbox()) + QLatin1Char('>');
+}
+
+/** @short Is the human-readable part "useful", i.e. does it contain something else besides the e-mail address? */
+bool MailAddress::hasUsefulDisplayName() const
+{
+    return !name.isEmpty() && name.trimmed().toUtf8().toLower() != asSMTPMailbox().toLower();
+}
+
+/** @short Convert a QUrl into a MailAddress instance */
+bool MailAddress::fromUrl(MailAddress &into, const QUrl &url, const QString &expectedScheme)
+{
+    if (url.scheme().toLower() != expectedScheme.toLower())
+        return false;
+
+    QStringList list = url.path().split(QLatin1Char('@'));
+    if (list.size() != 2)
+        return false;
+
+    QUrlQuery q(url);
+    Imap::Message::MailAddress addr(q.queryItemValue(QStringLiteral("X-Trojita-DisplayName")), QString(),
+                                    list[0], list[1]);
+
+    if (!addr.hasUsefulDisplayName())
+        addr.name.clear();
+    into = addr;
+    return true;
+}
+
+/** @short Helper to construct this from a pair of (human readable name, e-mail address)
+
+This is mainly useful to prevent reimplementing the @-based joining all the time.
+*/
+MailAddress MailAddress::fromNameAndMail(const QString &name, const QString &email)
+{
+    auto components = email.split(QLatin1Char('@'));
+    if (components.size() == 2) {
+        return MailAddress(name, QString(), components[0], components[1]);
+    } else {
+        // garbage in, garbage out
+        return MailAddress(name, QString(), email, QString());
+    }
 }
 
 QTextStream &operator<<(QTextStream &stream, const MailAddress &address)
@@ -278,6 +325,15 @@ MailAddressesEqualByDomain::result_type MailAddressesEqualByDomain::operator()(c
 {
     // FIXME: fancy stuff like the IDN?
     return a.host.toLower() == b.host.toLower();
+}
+
+
+MailAddressesEqualByDomainSuffix::result_type MailAddressesEqualByDomainSuffix::operator()(const MailAddress &a, const MailAddress &b) const
+{
+    // FIXME: fancy stuff like the IDN?
+    auto aHost = a.host.toLower();
+    auto bHost = b.host.toLower();
+    return aHost == bHost || aHost.endsWith(QLatin1Char('.') + bHost);
 }
 
 }

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -20,25 +20,34 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "LoadablePartWidget.h"
+#include "Gui/MessageView.h" // so that the compiler knows that it's a QObject
 #include "Imap/Model/ItemRoles.h"
-#include "Imap/Model/Utils.h"
+#include "UiUtils/Formatting.h"
 
 #include <QPushButton>
 
 namespace Gui
 {
 
-LoadablePartWidget::LoadablePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex  &part,
-                                       QObject *wheelEventFilter, QObject *guiInteractionTarget, const LoadingTriggerMode mode):
-    QStackedWidget(parent), manager(manager), partIndex(part), realPart(0), wheelEventFilter(wheelEventFilter),
-    guiInteractionTarget(guiInteractionTarget), loadButton(0), m_loadOnShow(mode == LOAD_ON_SHOW)
+LoadablePartWidget::LoadablePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &part,
+                                       PartWidgetFactory *factory, int recursionDepth,
+                                       const UiUtils::PartLoadingOptions loadingMode):
+    QStackedWidget(parent), manager(manager), partIndex(part), m_factory(factory),
+    m_recursionDepth(recursionDepth), m_loadingMode(loadingMode), realPart(0), loadButton(0), m_loadOnShow(false)
 {
     Q_ASSERT(partIndex.isValid());
-    if (mode == LOAD_ON_CLICK) {
+
+    QString mimeType = partIndex.data(Imap::Mailbox::RolePartMimeType).toString().toLower();
+
+    if ((loadingMode & UiUtils::PART_IS_HIDDEN) ||
+            (loadingMode & UiUtils::PART_IGNORE_CLICKTHROUGH) ||
+            partIndex.data(Imap::Mailbox::RoleIsFetched).toBool()) {
+        m_loadOnShow = true;
+    } else {
         loadButton = new QPushButton(tr("Load %1 (%2)").arg(partIndex.data(Imap::Mailbox::RolePartMimeType).toString(),
-                                     Imap::Mailbox::PrettySize::prettySize(partIndex.data(Imap::Mailbox::RolePartOctets).toUInt())),
+                                     UiUtils::Formatting::prettySize(partIndex.data(Imap::Mailbox::RolePartOctets).toULongLong())),
                                      this);
-        connect(loadButton, SIGNAL(clicked()), this, SLOT(loadClicked()));
+        connect(loadButton, &QAbstractButton::clicked, this, &LoadablePartWidget::loadClicked);
         addWidget(loadButton);
     }
 }
@@ -55,16 +64,20 @@ void LoadablePartWidget::loadClicked()
         loadButton->deleteLater();
         loadButton = 0;
     }
-    realPart = new SimplePartWidget(this, manager, partIndex);
-    realPart->installEventFilter(wheelEventFilter);
-    realPart->connectGuiInteractionEvents(guiInteractionTarget);
+
+    // We have to disable any flags which might cause recursion here
+    realPart = m_factory->walk(partIndex, m_recursionDepth + 1,
+                               (m_loadingMode | UiUtils::PART_IGNORE_CLICKTHROUGH |
+                                UiUtils::PART_IGNORE_LOAD_ON_SHOW)
+                               ^ UiUtils::PART_IS_HIDDEN);
     addWidget(realPart);
     setCurrentIndex(1);
 }
 
 QString LoadablePartWidget::quoteMe() const
 {
-    return realPart ? realPart->quoteMe() : QString();
+    AbstractPartWidget *part = dynamic_cast<AbstractPartWidget*>(realPart);
+    return part ? part->quoteMe() : QString();
 }
 
 void LoadablePartWidget::showEvent(QShowEvent *event)
@@ -75,5 +88,17 @@ void LoadablePartWidget::showEvent(QShowEvent *event)
         loadClicked();
     }
 }
+
+#define IMPL_PART_FORWARD_ONE_METHOD(METHOD) \
+void LoadablePartWidget::METHOD() \
+{\
+    if (AbstractPartWidget *w = dynamic_cast<AbstractPartWidget*>(realPart)) \
+        w->METHOD(); \
+}
+
+IMPL_PART_FORWARD_ONE_METHOD(reloadContents)
+IMPL_PART_FORWARD_ONE_METHOD(zoomIn)
+IMPL_PART_FORWARD_ONE_METHOD(zoomOut)
+IMPL_PART_FORWARD_ONE_METHOD(zoomOriginal)
 
 }

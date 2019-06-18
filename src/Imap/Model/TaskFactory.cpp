@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -21,32 +21,34 @@
 */
 
 #include "TaskFactory.h"
-#include "AppendTask.h"
-#include "CopyMoveMessagesTask.h"
-#include "CreateMailboxTask.h"
-#include "DeleteMailboxTask.h"
-#include "EnableTask.h"
-#include "ExpungeMailboxTask.h"
-#include "FetchMsgMetadataTask.h"
-#include "FetchMsgPartTask.h"
-#include "GenUrlAuthTask.h"
-#include "GetAnyConnectionTask.h"
-#include "IdTask.h"
-#include "KeepMailboxOpenTask.h"
-#include "Fake_ListChildMailboxesTask.h"
-#include "Fake_OpenConnectionTask.h"
-#include "NumberOfMessagesTask.h"
-#include "ObtainSynchronizedMailboxTask.h"
-#include "OpenConnectionTask.h"
-#include "UidSubmitTask.h"
-#include "UpdateFlagsTask.h"
-#include "ThreadTask.h"
-#include "NoopTask.h"
-#include "UnSelectTask.h"
-#include "SortTask.h"
-#include "SubscribeUnsubscribeTask.h"
+#include "Common/ConnectionId.h"
 #include "Imap/Model/TaskPresentationModel.h"
 #include "Imap/Parser/Parser.h"
+#include "Imap/Tasks/AppendTask.h"
+#include "Imap/Tasks/CopyMoveMessagesTask.h"
+#include "Imap/Tasks/CreateMailboxTask.h"
+#include "Imap/Tasks/DeleteMailboxTask.h"
+#include "Imap/Tasks/EnableTask.h"
+#include "Imap/Tasks/ExpungeMailboxTask.h"
+#include "Imap/Tasks/FetchMsgMetadataTask.h"
+#include "Imap/Tasks/FetchMsgPartTask.h"
+#include "Imap/Tasks/GenUrlAuthTask.h"
+#include "Imap/Tasks/GetAnyConnectionTask.h"
+#include "Imap/Tasks/IdTask.h"
+#include "Imap/Tasks/KeepMailboxOpenTask.h"
+#include "Imap/Tasks/Fake_ListChildMailboxesTask.h"
+#include "Imap/Tasks/Fake_OpenConnectionTask.h"
+#include "Imap/Tasks/NumberOfMessagesTask.h"
+#include "Imap/Tasks/ObtainSynchronizedMailboxTask.h"
+#include "Imap/Tasks/OpenConnectionTask.h"
+#include "Imap/Tasks/UidSubmitTask.h"
+#include "Imap/Tasks/UpdateFlagsTask.h"
+#include "Imap/Tasks/UpdateFlagsOfAllMessagesTask.h"
+#include "Imap/Tasks/ThreadTask.h"
+#include "Imap/Tasks/NoopTask.h"
+#include "Imap/Tasks/UnSelectTask.h"
+#include "Imap/Tasks/SortTask.h"
+#include "Imap/Tasks/SubscribeUnsubscribeTask.h"
 #include "Streams/SocketFactory.h"
 
 namespace Imap
@@ -94,12 +96,12 @@ ExpungeMailboxTask *TaskFactory::createExpungeMailboxTask(Model *model, const QM
     return new ExpungeMailboxTask(model, mailbox);
 }
 
-FetchMsgMetadataTask *TaskFactory::createFetchMsgMetadataTask(Model *model, const QModelIndex &mailbox, const QList<uint> &uids)
+FetchMsgMetadataTask *TaskFactory::createFetchMsgMetadataTask(Model *model, const QModelIndex &mailbox, const Imap::Uids &uids)
 {
     return new FetchMsgMetadataTask(model, mailbox, uids);
 }
 
-FetchMsgPartTask *TaskFactory::createFetchMsgPartTask(Model *model, const QModelIndex &mailbox, const QList<uint> &uids, const QStringList &parts)
+FetchMsgPartTask *TaskFactory::createFetchMsgPartTask(Model *model, const QModelIndex &mailbox, const Imap::Uids &uids, const QList<QByteArray> &parts)
 {
     return new FetchMsgPartTask(model, mailbox, uids, parts);
 }
@@ -128,6 +130,12 @@ ObtainSynchronizedMailboxTask *TaskFactory::createObtainSynchronizedMailboxTask(
         ImapTask *parentTask, KeepMailboxOpenTask *keepTask)
 {
     return new ObtainSynchronizedMailboxTask(model, mailboxIndex, parentTask, keepTask);
+}
+
+UpdateFlagsOfAllMessagesTask *TaskFactory::createUpdateFlagsOfAllMessagesTask(Model *model, const QModelIndex &mailbox,
+        const FlagsOperation flagOperation, const QString &flags)
+{
+    return new UpdateFlagsOfAllMessagesTask(model, mailbox, flagOperation, flags);
 }
 
 UpdateFlagsTask *TaskFactory::createUpdateFlagsTask(Model *model, const QModelIndexList &messages, const FlagsOperation flagOperation, const QString &flags)
@@ -177,10 +185,16 @@ AppendTask *TaskFactory::createAppendTask(Model *model, const QString &targetMai
     return new AppendTask(model, targetMailbox, data, flags, timestamp);
 }
 
-SubscribeUnsubscribeTask *TaskFactory::createSubscribeUnsubscribeTask(Model *model, const QModelIndex &mailbox,
+SubscribeUnsubscribeTask *TaskFactory::createSubscribeUnsubscribeTask(Model *model, const QString &mailboxName,
                                                                       const SubscribeUnsubscribeOperation operation)
 {
-    return new SubscribeUnsubscribeTask(model, mailbox, operation);
+    return new SubscribeUnsubscribeTask(model, mailboxName, operation);
+}
+
+SubscribeUnsubscribeTask *TaskFactory::createSubscribeUnsubscribeTask(Model *model, ImapTask *parentTask, const QString &mailboxName,
+                                                                      const SubscribeUnsubscribeOperation operation)
+{
+    return new SubscribeUnsubscribeTask(model, parentTask, mailboxName, operation);
 }
 
 GenUrlAuthTask *TaskFactory::createGenUrlAuthTask(Model *model, const QString &host, const QString &user, const QString &mailbox,
@@ -200,12 +214,13 @@ TestingTaskFactory::TestingTaskFactory(): TaskFactory(), fakeOpenConnectionTask(
 
 Parser *TestingTaskFactory::newParser(Model *model)
 {
-    Parser *parser = new Parser(model, model->m_socketFactory->create(), ++model->m_lastParserId);
+    Parser *parser = new Parser(model, model->m_socketFactory->create(), Common::ConnectionId::next());
     ParserState parserState(parser);
-    QObject::connect(parser, SIGNAL(responseReceived(Imap::Parser*)), model, SLOT(responseReceived(Imap::Parser*)), Qt::QueuedConnection);
-    QObject::connect(parser, SIGNAL(connectionStateChanged(Imap::Parser*,Imap::ConnectionState)), model, SLOT(handleSocketStateChanged(Imap::Parser*,Imap::ConnectionState)));
-    QObject::connect(parser, SIGNAL(lineReceived(Imap::Parser*,QByteArray)), model, SLOT(slotParserLineReceived(Imap::Parser*,QByteArray)));
-    QObject::connect(parser, SIGNAL(lineSent(Imap::Parser*,QByteArray)), model, SLOT(slotParserLineSent(Imap::Parser*,QByteArray)));
+    QObject::connect(parser, &Parser::responseReceived,
+                     model, static_cast<void (Model::*)(Parser *)>(&Model::responseReceived), Qt::QueuedConnection);
+    QObject::connect(parser, &Parser::connectionStateChanged, model, &Model::handleSocketStateChanged);
+    QObject::connect(parser, &Parser::lineReceived, model, &Model::slotParserLineReceived);
+    QObject::connect(parser, &Parser::lineSent, model, &Model::slotParserLineSent);
     model->m_parsers[ parser ] = parserState;
     model->m_taskModel->slotParserCreated(parser);
     return parser;

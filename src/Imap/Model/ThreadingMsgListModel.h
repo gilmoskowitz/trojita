@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -68,7 +68,7 @@ The problem with threading is that due to the extremely asynchronous nature of t
 to messages which "just arrived", and therefore do not have even their UID available. That sucks, because we have to somehow handle
 them.  Situation gets a bit more complicated by the initial syncing -- this ThreadingMsgListModel can't tell whether the rowsInserted()
 signals mean that the underlying model is getting populated, or whether it's a sign of a just-arrived message.  On a plus side, the Model
-guarantees that the only occurence when a message could have UID 0 is when the mailbox has been synced previously, and the message is a new
+guarantees that the only occurrence when a message could have UID 0 is when the mailbox has been synced previously, and the message is a new
 arrival.  In all other contexts (that is, during the mailbox re-synchronization), there is a hard guarantee that the UID of any message
 available via the MVC API will always be non-zero.
 
@@ -80,6 +80,7 @@ the pruneTree() method, except that we might not know the UID of the message in 
 class ThreadingMsgListModel: public QAbstractProxyModel
 {
     Q_OBJECT
+    Q_ENUMS(SortCriterium)
 
 public:
 
@@ -133,10 +134,12 @@ public:
     virtual QVariant data(const QModelIndex &proxyIndex, int role) const;
     virtual Qt::ItemFlags flags(const QModelIndex &index) const;
     QVariant headerData(int section, Qt::Orientation orientation, int role) const;
+    // Qt5 reimplements sibling() within the proxy models, and the default implementation constitutes
+    // a behavior change compared to Qt4.
+    virtual QModelIndex sibling(int row, int column, const QModelIndex &idx) const;
 
     virtual QStringList mimeTypes() const;
     virtual QMimeData *mimeData(const QModelIndexList &indexes) const;
-    virtual Qt::DropActions supportedDropActions() const;
 
     /** @short List of capabilities which could be used for threading
 
@@ -146,7 +149,7 @@ public:
 
     QStringList currentSearchCondition() const;
     SortCriterium currentSortCriterium() const;
-    Qt::SortOrder currentSortOrder() const;
+    Q_INVOKABLE Qt::SortOrder currentSortOrder() const;
 
 public slots:
     void resetMe();
@@ -163,7 +166,7 @@ public slots:
     void applyThreading(const QVector<Imap::Responses::ThreadingNode> &mapping);
 
     /** @short SORT response has arrived */
-    void slotSortingAvailable(const QList<uint> &uids);
+    void slotSortingAvailable(const Imap::Uids &uids);
 
     /** @short SORT has failed */
     void slotSortingFailed();
@@ -176,11 +179,13 @@ public slots:
     /** @short Enable or disable threading */
     void setUserWantsThreading(bool enable);
 
-    bool setUserSearchingSortingPreference(const QStringList &searchConditions, const SortCriterium criterium,
+    Q_INVOKABLE bool setUserSearchingSortingPreference(const QStringList &searchConditions, const SortCriterium criterium,
                                            const Qt::SortOrder order = Qt::AscendingOrder);
 
     void slotIncrementalThreadingAvailable(const Responses::ESearch::IncrementalThreadingData_t &data);
     void slotIncrementalThreadingFailed();
+
+    void delayedPrune();
 
 signals:
     void sortingFailed();
@@ -249,7 +254,7 @@ private:
     /** @short Last assigned internal ID */
     uint threadingHelperLastId;
 
-    /** @short Messages with unkown UIDs */
+    /** @short Messages with unknown UIDs */
     QSet<TreeItem*> unknownUids;
 
     /** @short Threading algorithm we're using for this request */
@@ -291,16 +296,18 @@ private:
 
     This variable holds the UIDs of all messages in this mailbox, sorted according to the current sorting criteria.
     */
-    QList<uint> m_currentSortResult;
+    Imap::Uids m_currentSortResult;
 
     /** @short Is the cached result of SEARCH/SORT fresh enough? */
     typedef enum {
-        SEARCH_RESULT_ASKED, /**< We've asked for the data */
-        SEARCH_RESULT_FRESH, /**< The response has just arrived and didn't get invalidated since then */
-        SEARCH_RESULT_INVALIDATED /**< A new message has arrived, rendering our copy invalid */
-    } SearchResultValidity;
+        RESULT_ASKED, /**< We've asked for the data */
+        RESULT_FRESH, /**< The response has just arrived and didn't get invalidated since then */
+        RESULT_INVALIDATED /**< A new message has arrived, rendering our copy invalid */
+    } ResultValidity;
 
-    SearchResultValidity m_searchValidity;
+    ResultValidity m_searchValidity;
+
+    QTimer *m_delayedPrune;
 
     friend class ::ImapModelThreadingTest; // needs access to wantThreading();
 };

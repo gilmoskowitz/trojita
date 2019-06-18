@@ -1,4 +1,5 @@
 /* Copyright (C) 2006 - 2011 Thomas Gahr <thomas.gahr@physik.uni-muenchen.de>
+   Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,36 +23,22 @@
 
 
 #include <QApplication>
-#include <QCursor> // for Util::centerWidgetOnScreen
-#include <QDesktopWidget> // for Util::centerWidgetOnScreen
+#include <QBuffer>
+#include <QCheckBox>
+#include <QDir>
+#include <QFontDatabase>
+#include <QGridLayout>
+#include <QIcon>
+#include <QProcess>
+#include <QSettings>
 
+#include "configure.cmake.h"
 #include "Util.h"
+#include "Window.h"
 
-namespace Gui
-{
+namespace Gui {
 
-namespace Util
-{
-
-void centerWidgetOnScreen(QWidget *widget, bool centerOnCursorScreen)
-{
-    widget->adjustSize();
-    // Regarding the option to center widget on screen containing mousepointer (only relevant for dual-screen-setups):
-    // If some day we'll have (configurable) key shortcuts, there might be situations when the mousepointer (and
-    // therefore most likely the user's attention) is not on the screen containg widget's parentWidget.   So by
-    // centerning the widget on the screen containing the mousepointer we assure to be as close to the user's focus as
-    // possible.  For single screen setups this doesn't make any difference at all.  If the widget to be centered is
-    // shown as a result of a mouseClick this makes no difference, too, since the mouseClick most probably happened on
-    // the widget's parentWidget so the widget will be centered on the screen containing it.  Still for the sake of
-    // completeness the option to pass false is kept open for any case where it might be needed.
-    if (centerOnCursorScreen) {
-        widget->move(QApplication::desktop()->screenGeometry(QCursor::pos()).center()
-                     - widget->rect().center());
-    } else {
-        widget->move(QApplication::desktop()->screenGeometry(widget->parentWidget()).center()
-                     - widget->rect().center());
-    }
-}
+namespace Util {
 
 /** @short Path to the "package data directory"
 
@@ -62,10 +49,49 @@ value might contain data for a completely different version of Trojita.
 QString pkgDataDir()
 {
 #ifdef PKGDATADIR
-    return QLatin1String(PKGDATADIR);
+    return QStringLiteral(PKGDATADIR);
 #else
     return QString();
 #endif
+}
+
+/** @short Ask for something and provide a facility to not ask again
+
+Check settings whether an option is already set to ignore this question. If not, ask the user and remember whether
+she wants to be asked again.
+*/
+int askForSomethingUnlessTold(const QString &title, const QString &message, const QString &settingsName,
+                              QMessageBox::StandardButtons buttons, QWidget *parent, QSettings *settings)
+{
+    int saved = settings->value(settingsName, -1).toInt();
+    if (saved != -1) {
+        // This means that we're not supposed to ask again
+        return saved;
+    }
+
+    QMessageBox box(QMessageBox::Question, title, message, QMessageBox::NoButton, parent);
+    box.setStandardButtons(buttons);
+    QCheckBox *checkbox = new QCheckBox(Gui::MainWindow::tr("Don't ask again"), &box);
+    QGridLayout *layout = qobject_cast<QGridLayout*>(box.layout());
+    Q_ASSERT(layout);
+    layout->addWidget(checkbox, 1, 1);
+    int res = box.exec();
+    if (checkbox->isChecked())
+        settings->setValue(settingsName, res);
+    return res;
+}
+
+/** @short Return image data from the specified filename as a self-contained URL of the data: scheme
+
+The image is resized and always returned in the PNG format.
+*/
+QString resizedImageAsDataUrl(const QString &fileName, const int extent)
+{
+    QByteArray bdata;
+    QBuffer buf(&bdata);
+    buf.open(QIODevice::WriteOnly);
+    QIcon(fileName).pixmap(extent).toImage().save(&buf, "png");
+    return QLatin1String("data:image/png;base64,") + QString::fromUtf8(bdata.toBase64());
 }
 
 } // namespace Util

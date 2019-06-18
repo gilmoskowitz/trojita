@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,9 +22,10 @@
 
 #include "OfflineConnectionTask.h"
 #include <QTimer>
+#include "Common/ConnectionId.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/TaskPresentationModel.h"
 #include "Streams/FakeSocket.h"
-#include "ItemRoles.h"
-#include "TaskPresentationModel.h"
 
 namespace Imap
 {
@@ -33,7 +34,7 @@ namespace Mailbox
 
 OfflineConnectionTask::OfflineConnectionTask(Model *model) : ImapTask(model)
 {
-    parser = new Parser(model, new FakeSocket(), ++model->m_lastParserId);
+    parser = new Parser(model, new Streams::FakeSocket(CONN_STATE_CONNECTED_PRETLS_PRECAPS), Common::ConnectionId::next());
     ParserState parserState(parser);
     parserState.connState = CONN_STATE_LOGOUT;
     model->m_parsers[parser] = parserState;
@@ -51,14 +52,14 @@ void OfflineConnectionTask::slotPerform()
 void OfflineConnectionTask::perform()
 {
     model->runReadyTasks();
-    _failed("We're offline");
+    _failed(tr("We're offline"));
     QTimer::singleShot(0, this, SLOT(slotDie()));
 }
 
 /** @short A slot for the die() */
 void OfflineConnectionTask::slotDie()
 {
-    die();
+    die(tr("Offline"));
     deleteLater();
     model->killParser(parser, Model::PARSER_KILL_EXPECTED);
     model->m_parsers.remove(parser);

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -59,6 +59,8 @@ QString connectionStateToString(const ConnectionState state)
         return QObject::tr("Activating compression...");
     case CONN_STATE_AUTHENTICATED:
         return QObject::tr("Logged in.");
+    case CONN_STATE_SELECTING_WAIT_FOR_CLOSE:
+        return QObject::tr("Waiting for another mailbox...");
     case CONN_STATE_SELECTING:
         return QObject::tr("Opening mailbox...");
     case CONN_STATE_SYNCING:

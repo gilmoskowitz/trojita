@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,6 +22,7 @@
 #ifndef IMAP_ENCODERS_H
 #define IMAP_ENCODERS_H
 
+#include <QMap>
 #include <QString>
 
 namespace Imap {
@@ -38,6 +39,19 @@ typedef enum {
     RFC2047_STRING_UTF8
 } Rfc2047StringCharacterSetType;
 
+/** @short Production type as per RFC 2047 chapter 5
+
+These differ in the set of characters that are allowed to be sent unescaped.
+*/
+enum class Rfc2047ProductionType {
+    /** @short "An 'encoded-word' may replace a 'text' token..." -- case (1) */
+    Text,
+    /** @short "As a replacement for a 'word' entity within a 'phrase'" -- case (3) */
+    Phrase,
+};
+
+QString decodeByteArray(const QByteArray &encoded, const QByteArray &charset);
+
 QByteArray quotedString(const QByteArray &unquoted, QuotedStringStyle style = DoubleQuoted);
 QByteArray encodeRFC2047Phrase(const QString &text);
 
@@ -51,6 +65,12 @@ QString decodeImapFolderName(const QByteArray &raw);
 QByteArray quotedPrintableDecode(const QByteArray &raw);
 QByteArray quotedPrintableEncode(const QByteArray &raw);
 
+QString extractRfc2231Param(const QMap<QByteArray, QByteArray> &parameters, const QByteArray &key);
+QByteArray encodeRfc2231Parameter(const QByteArray &key, const QString &value);
+
+QString wrapFormatFlowed(const QString &input);
+
+void decodeContentTransferEncoding(const QByteArray &rawData, const QByteArray &encoding, QByteArray *outputData);
 }
 
 #endif // IMAP_ENCODERS_H

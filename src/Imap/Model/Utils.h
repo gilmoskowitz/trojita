@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -23,26 +23,15 @@
 #define IMAP_MAILBOX_UTILS_H
 
 #include <QDateTime>
+#include <QModelIndex>
 #include <QObject>
 
+class QSettings;
 class QSslCertificate;
 class QSslError;
 
-namespace Imap
-{
-namespace Mailbox
-{
-
-class PrettySize: public QObject
-{
-    Q_OBJECT
-public:
-    typedef enum {
-        COMPACT_FORM, /**< @short Do not append "B" when the size is less than 1kB */
-        WITH_BYTES_SUFFIX /**< @short Always prepend the units, even if it's just in bytes */
-    } ShowBytesSuffix;
-    static QString prettySize(uint bytes, const ShowBytesSuffix compactUnitFormat=COMPACT_FORM);
-};
+namespace Imap {
+namespace Mailbox {
 
 /** @short Return the name of a log file for logging IMAP communication */
 QString persistentLogFileName();
@@ -50,35 +39,19 @@ QString persistentLogFileName();
 /** @short Return a system/platform version */
 QString systemPlatformVersion();
 
-class CertificateUtils: public QObject
-{
-    Q_OBJECT
-public:
-    static QString chainToHtml(const QList<QSslCertificate> &sslChain);
-    static QString errorsToHtml(const QList<QSslError> &sslErrors);
-
-    /** @short Shamelessly stolen from QMessageBox */
-    typedef enum {
-        NoIcon = 0,
-        Information = 1,
-        Warning = 2,
-        Critical = 3,
-        Question = 4
-    } IconType;
-
-    static void formatSslState(const QList<QSslCertificate> &sslChain, const QList<QSslCertificate> &oldSslChain,
-                               const QByteArray &oldCertificatePem, const QList<QSslError> &sslErrors,
-                               QString *title, QString *message, IconType *icon);
-
-    static QByteArray htmlHexifyByteArray(const QByteArray &rawInput);
-};
-
 }
 
 QString formatDateTimeWithTimeZoneAtEnd(const QDateTime &now, const QString &format);
 QString dateTimeToRfc2822(const QDateTime &now);
 QString dateTimeToInternalDate(const QDateTime &now);
 
+void migrateSettings(QSettings *settings);
+
+QModelIndex deproxifiedIndex(const QModelIndex& index);
+
+bool removeRecursively(const QString &dirName);
+
 }
+
 
 #endif // IMAP_MAILBOX_UTILS_H

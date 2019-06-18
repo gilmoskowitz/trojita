@@ -61,7 +61,7 @@ public slots:
     /** @short Cache has encountered some error */
     void cacheError(const QString &error);
     /** @short Updating progress */
-    void showConnectionStatus(QObject* parser, Imap::ConnectionState state);
+    void showConnectionStatus(uint parser, Imap::ConnectionState state);
     /** @short Go through all mailboxes and check for new stuff */
     void goTroughMailboxes();
 
@@ -82,7 +82,7 @@ private:
 
     Imap::Mailbox::Model *m_model;
     QSettings *m_settings;
-    MailboxFinder *m_finder;
+    Imap::Mailbox::MailboxFinder *m_finder;
     QMap<QString, QPointer<MailSynchronizer> > m_syncers;
     QTimer *m_rotateMailboxes;
     XtCache *m_cache;

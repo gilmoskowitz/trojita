@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -19,16 +19,15 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifndef IMAP_SOCKET_H
-#define IMAP_SOCKET_H
+#ifndef STREAMS_SOCKET_H
+#define STREAMS_SOCKET_H
 
 #include <memory>
 #include <QAbstractSocket>
 #include <QSslError>
 #include "../Imap/ConnectionState.h"
 
-namespace Imap
-{
+namespace Streams {
 
 /** @short A common wrapepr class for implementing remote sockets
 
@@ -92,6 +91,6 @@ signals:
     void encrypted();
 };
 
-};
+}
 
-#endif /* IMAP_SOCKET_H */
+#endif

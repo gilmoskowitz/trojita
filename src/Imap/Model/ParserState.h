@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -27,11 +27,9 @@
 #include "../ConnectionState.h"
 #include "../Parser/Parser.h"
 
-namespace Imap
-{
+namespace Imap {
 class Parser;
-namespace Mailbox
-{
+namespace Mailbox {
 class ImapTask;
 class KeepMailboxOpenTask;
 
@@ -46,7 +44,7 @@ struct ParserState {
     /** @short List of tasks which are active already, and should therefore receive events */
     QList<ImapTask *> activeTasks;
     /** @short An active KeepMailboxOpenTask, if one exists */
-    KeepMailboxOpenTask *maintainingTask;
+    QPointer<KeepMailboxOpenTask> maintainingTask;
     /** @short A list of cepabilities, as advertised by the server */
     QStringList capabilities;
     /** @short Is the @arg capabilities usable? */
@@ -55,36 +53,13 @@ struct ParserState {
     QList<Responses::List> listResponses;
 
     /** @short Is the connection currently being processed? */
-    bool beingProcessed;
+    int processingDepth;
 
     ParserState(Parser *parser);
     ParserState();
 };
 
-/** @short Guards access to the ParserState
-
-Slots which are connected to signals directly or indirectly connected to this Model could, unfortunately, re-enter the event
-loop.  When this happens, other events could possibly get delivered leading to activation of Model's "dangerous" slots:
-
-    - responseReceived()
-    - slotParseError()
-
-These slots are dangerous because they have the potential of re-entering the event loop and also could delete the Parsers/Tasks.
-Thhat's why we have to use a crude reference counter to guarantee that our objects aren't deleted on return from a nested event
-loop until the slots triggered by the *outer* event loops have finished.
-
-See https://projects.flaska.net/issues/467 for a tiny bit of detail.
-
-*/
-struct ParserStateGuard {
-    ParserState &m_s;
-    bool wasActive;
-    ParserStateGuard(ParserState &s);
-    ~ParserStateGuard();
-};
-
 }
-
 }
 
 #endif /* IMAP_MODEL_PARSERSTATE_H */

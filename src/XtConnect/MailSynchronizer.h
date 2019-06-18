@@ -35,9 +35,14 @@
 
 #include "Imap/Model/Model.h"
 
+namespace Imap {
+namespace Mailbox {
+class MailboxFinder;
+}
+}
+
 namespace XtConnect {
 
-class MailboxFinder;
 class MessageDownloader;
 class SqlStorage;
 
@@ -51,7 +56,7 @@ class MailSynchronizer : public QObject
 {
     Q_OBJECT
 public:
-    explicit MailSynchronizer( QObject *parent, Imap::Mailbox::Model *model, MailboxFinder *finder, MessageDownloader *downloader, SqlStorage *storage );
+    explicit MailSynchronizer( QObject *parent, Imap::Mailbox::Model *model, Imap::Mailbox::MailboxFinder *finder, MessageDownloader *downloader, SqlStorage *storage );
     void setMailbox( const QString &mailbox );
     /** @short Ask the Model that we're still here and need updates
 
@@ -88,7 +93,7 @@ This function will queue renewal automatically.
     void _saveAddrList( const quint64 emlId, const QVariant &addresses, const QLatin1String kind );
 
     Imap::Mailbox::Model* m_model;
-    MailboxFinder *m_finder;
+    Imap::Mailbox::MailboxFinder *m_finder;
     MessageDownloader *m_downloader;
     SqlStorage *m_storage;
     QString m_mailbox;

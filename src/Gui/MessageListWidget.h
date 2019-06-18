@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -25,7 +25,7 @@
 
 #include <QWidget>
 
-class QLineEdit;
+class LineEdit;
 class QTimer;
 class QToolButton;
 
@@ -41,14 +41,20 @@ public:
     explicit MessageListWidget(QWidget *parent = 0);
 
     void setFuzzySearchSupported(bool supported);
+    void setRawSearchEnabled(bool enabled);
 
     QStringList searchConditions() const;
 
     // FIXME: consider making this private and moving the logic from Window with it
     MsgListView *tree;
 
+public slots:
+    void focusSearch();
+    void focusRawSearch();
+
 signals:
     void requestingSearch(const QStringList &conditions);
+    void rawSearchSettingChanged(bool enabled);
 
 protected slots:
     void slotApplySearch();
@@ -63,16 +69,19 @@ private slots:
     void slotUpdateSearchCursor();
 
 private:
-    QLineEdit *m_quickSearchText;
-    QToolButton *m_searchOptions;
+    LineEdit *m_quickSearchText;
+    QAction *m_searchOptions;
     QAction *m_searchInSubject;
     QAction *m_searchInBody;
     QAction *m_searchInSenders;
     QAction *m_searchInRecipients;
     QAction *m_searchFuzzy;
+    QAction *m_rawSearch;
     bool m_supportsFuzzySearch;
     QTimer *m_searchResetTimer;
     QString m_queryPlaceholder;
+
+    friend class MainWindow; // needs access to our private slots
 };
 
 }

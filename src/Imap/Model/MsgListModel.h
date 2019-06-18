@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -57,19 +57,17 @@ public:
     virtual Qt::ItemFlags flags(const QModelIndex &index) const;
     virtual QStringList mimeTypes() const;
     virtual QMimeData *mimeData(const QModelIndexList &indexes) const;
+    virtual Qt::DropActions supportedDragActions() const;
     virtual Qt::DropActions supportedDropActions() const;
-
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    QHash<int, QByteArray> trojitaProxyRoleNames() const;
-#else
     virtual QHash<int, QByteArray> roleNames() const;
-#endif
 
     QModelIndex currentMailbox() const;
 
     bool itemsValid() const;
 
-    enum { SUBJECT, SEEN, FROM, TO, CC, BCC, DATE, RECEIVED_DATE, SIZE, COLUMN_COUNT };
+    // These columns MUST NOT be reordered. The GUI stores the view state based on their values and any changes will lead to
+    // a severe user-visible breakage.
+    enum { SUBJECT, SEEN, FROM, TO, CC, BCC, DATE, RECEIVED_DATE, SIZE, FLAGGED, ATTACHMENT, COLUMN_COUNT };
 
 public slots:
     void resetMe();
@@ -83,7 +81,7 @@ public slots:
 
 signals:
     void messageRemoved(void *);
-    void mailboxChanged();
+    void mailboxChanged(const QModelIndex &mailbox);
 
     /** @short Messages are available for the first time after selecting new mailbox */
     void messagesAvailable();

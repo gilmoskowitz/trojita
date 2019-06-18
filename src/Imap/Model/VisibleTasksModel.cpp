@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -37,26 +37,13 @@ VisibleTasksModel::VisibleTasksModel(QObject *parent, QAbstractItemModel *taskMo
     m_flatteningModel->setSourceModel(taskModel);
     setSourceModel(m_flatteningModel);
     setDynamicSortFilter(true);
-    connect(m_flatteningModel, SIGNAL(rowsInserted(QModelIndex,int,int)), this, SIGNAL(hasVisibleTasksChanged()));
-    connect(m_flatteningModel, SIGNAL(rowsRemoved(QModelIndex,int,int)), this, SIGNAL(hasVisibleTasksChanged()));
-    connect(m_flatteningModel, SIGNAL(modelReset()), this, SIGNAL(hasVisibleTasksChanged()));
-    connect(m_flatteningModel, SIGNAL(layoutChanged()), this, SIGNAL(hasVisibleTasksChanged()));
-
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    // There's no virtual in Qt4.
-    setRoleNames(trojitaProxyRoleNames());
-#else
-    // In Qt5, the roleNames() is virtual and will work just fine.
-#endif
+    connect(m_flatteningModel, &QAbstractItemModel::rowsInserted, this, &VisibleTasksModel::hasVisibleTasksChanged);
+    connect(m_flatteningModel, &QAbstractItemModel::rowsRemoved, this, &VisibleTasksModel::hasVisibleTasksChanged);
+    connect(m_flatteningModel, &QAbstractItemModel::modelReset, this, &VisibleTasksModel::hasVisibleTasksChanged);
+    connect(m_flatteningModel, &QAbstractItemModel::layoutChanged, this, &VisibleTasksModel::hasVisibleTasksChanged);
 }
 
-// The following code is pretty much a huge PITA. The handling of roleNames() has changed between Qt4 and Qt5 in a way which makes
-// it rather convoluted to support both in the same code base. Oh well.
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-QHash<int, QByteArray> VisibleTasksModel::trojitaProxyRoleNames() const
-#else
 QHash<int, QByteArray> VisibleTasksModel::roleNames() const
-#endif
 {
     QHash<int, QByteArray> roleNames;
     roleNames[RoleTaskCompactName] = "compactName";

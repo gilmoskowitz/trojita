@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -60,7 +60,9 @@ public:
     virtual int columnCount(const QModelIndex &parent = QModelIndex()) const;
     virtual QModelIndex mapToSource(const QModelIndex &proxyIndex) const;
     virtual QModelIndex mapFromSource(const QModelIndex &sourceIndex) const;
+    virtual bool hasChildren(const QModelIndex &parent = QModelIndex()) const;
     void setSourceModel(QAbstractItemModel *sourceModel);
+    virtual bool dropMimeData(const QMimeData *data, Qt::DropAction action, int row, int column, const QModelIndex &parent);
     Q_INVOKABLE void setRootItem(QModelIndex rootIndex);
     Q_INVOKABLE void setRootItemByOffset(const int row);
     Q_INVOKABLE void setRootOneLevelUp();
@@ -68,10 +70,7 @@ public:
     Q_INVOKABLE QModelIndex parentOfRoot() const;
     Q_INVOKABLE bool itemsValid() const;
     QModelIndex rootIndex() const;
-
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
     virtual QHash<int, QByteArray> roleNames() const;
-#endif
 
 private slots:
     void handleDataChanged(const QModelIndex &topLeft, const QModelIndex &bottomRight);

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,9 +22,9 @@
 
 
 #include "AppendTask.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
 #include "GetAnyConnectionTask.h"
-#include "ItemRoles.h"
-#include "Model.h"
 
 namespace Imap
 {
@@ -74,9 +74,9 @@ bool AppendTask::handleStateHelper(const Imap::Responses::State *const resp)
                 const Responses::RespData<QPair<uint, Sequence> > *const respData =
                         dynamic_cast<const Responses::RespData<QPair<uint, Sequence> >* const>(resp->respCodeData.data());
                 Q_ASSERT(respData);
-                QList<uint> uids = respData->data.second.toList();
+                auto uids = respData->data.second.toVector();
                 if (uids.size() != 1) {
-                    log("APPENDUID: malformed data, cannot extract a single UID");
+                    log(QStringLiteral("APPENDUID: malformed data, cannot extract a single UID"));
                 } else {
                     emit appendUid(respData->data.first, uids.front());
                 }

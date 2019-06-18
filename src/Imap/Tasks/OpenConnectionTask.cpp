@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,8 +22,12 @@
 
 #include "OpenConnectionTask.h"
 #include <QTimer>
-#include "ItemRoles.h"
-#include "Model/TaskPresentationModel.h"
+#include "Common/ConnectionId.h"
+#include "Common/InvokeMethod.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/TaskPresentationModel.h"
+#include "Imap/Tasks/EnableTask.h"
+#include "Imap/Tasks/IdTask.h"
 #include "Streams/SocketFactory.h"
 #include "Streams/TrojitaZlibStatus.h"
 
@@ -36,13 +40,13 @@ OpenConnectionTask::OpenConnectionTask(Model *model) :
     ImapTask(model)
 {
     // Offline mode shall be checked by the caller who decides to create the connection
-    Q_ASSERT(model->networkPolicy() != Model::NETWORK_OFFLINE);
-    parser = new Parser(model, model->m_socketFactory->create(), ++model->m_lastParserId);
+    Q_ASSERT(model->networkPolicy() != NETWORK_OFFLINE);
+    parser = new Parser(model, model->m_socketFactory->create(), Common::ConnectionId::next());
     ParserState parserState(parser);
-    connect(parser, SIGNAL(responseReceived(Imap::Parser *)), model, SLOT(responseReceived(Imap::Parser*)), Qt::QueuedConnection);
-    connect(parser, SIGNAL(connectionStateChanged(Imap::Parser *,Imap::ConnectionState)), model, SLOT(handleSocketStateChanged(Imap::Parser *,Imap::ConnectionState)));
-    connect(parser, SIGNAL(lineReceived(Imap::Parser *,QByteArray)), model, SLOT(slotParserLineReceived(Imap::Parser *,QByteArray)));
-    connect(parser, SIGNAL(lineSent(Imap::Parser *,QByteArray)), model, SLOT(slotParserLineSent(Imap::Parser *,QByteArray)));
+    connect(parser, &Parser::responseReceived, model, static_cast<void (Model::*)(Parser*)>(&Model::responseReceived), Qt::QueuedConnection);
+    connect(parser, &Parser::connectionStateChanged, model, &Model::handleSocketStateChanged);
+    connect(parser, &Parser::lineReceived, model, &Model::slotParserLineReceived);
+    connect(parser, &Parser::lineSent, model, &Model::slotParserLineSent);
     model->m_parsers[ parser ] = parserState;
     model->m_taskModel->slotParserCreated(parser);
     markAsActiveTask();
@@ -57,9 +61,9 @@ OpenConnectionTask::OpenConnectionTask(Model *model, void *dummy):
 QString OpenConnectionTask::debugIdentification() const
 {
     if (parser)
-        return QString::fromUtf8("OpenConnectionTask: %1").arg(Imap::connectionStateToString(model->accessParser(parser).connState));
+        return QStringLiteral("OpenConnectionTask: %1").arg(Imap::connectionStateToString(model->accessParser(parser).connState));
     else
-        return QLatin1String("OpenConnectionTask: no parser");
+        return QStringLiteral("OpenConnectionTask: no parser");
 }
 
 void OpenConnectionTask::perform()
@@ -109,7 +113,7 @@ CONN_STATE_POSTAUTH_PRECAPS: checks result of the capability command
 bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const resp)
 {
     if (_dead) {
-        _failed("Asked to die");
+        _failed(tr("Asked to die"));
         return true;
     }
     using namespace Imap::Responses;
@@ -127,6 +131,7 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
     switch (model->accessParser(parser).connState) {
 
     case CONN_STATE_AUTHENTICATED:
+    case CONN_STATE_SELECTING_WAIT_FOR_CLOSE:
     case CONN_STATE_SELECTING:
     case CONN_STATE_SYNCING:
     case CONN_STATE_SELECTED:
@@ -149,10 +154,21 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
     {
         switch (resp->kind) {
         case PREAUTH:
+            if (model->m_startTls) {
+                // Oops, we cannot send STARTTLS when the connection is already authenticated.
+                // This is serious enough to warrant an error; an attacker might be going after a plaintext
+                // of a message we're going to APPEND, etc.
+                // Thanks to Arnt Gulbrandsen on the imap-protocol ML for asking what happens when we're configured
+                // to request STARTTLS and a PREAUTH is received, and to Michael M Slusarz for starting that discussion.
+                abortConnection(tr("Configuration requires sending STARTTLS, but the IMAP server greets us with PREAUTH. "
+                                   "Encryption cannot be established. If this configuration worked previously, someone "
+                                   "is after your data and they are pretty smart."));
+                return true;
+            }
             // Cool, we're already authenticated. Now, let's see if we have to issue CAPABILITY or if we already know that
             if (model->accessParser(parser).capabilitiesFresh) {
                 // We're alsmost done here, apart from compression
-                if (TROJITA_COMPRESS_DEFLATE && model->accessParser(parser).capabilities.contains(QLatin1String("COMPRESS=DEFLATE"))) {
+                if (TROJITA_COMPRESS_DEFLATE && model->accessParser(parser).capabilities.contains(QStringLiteral("COMPRESS=DEFLATE"))) {
                     compressCmd = parser->compressDeflate();
                     model->changeConnectionState(parser, CONN_STATE_COMPRESS_DEFLATE);
                 } else {
@@ -176,7 +192,7 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
             return true;
 
         case BYE:
-            logout(tr("Server has closed the connection"));
+            abortConnection(tr("This server gracefully refuses IMAP connections through a BYE response."));
             return true;
 
         case BAD:
@@ -185,7 +201,7 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
             if (resp->respCode != ALERT) {
                 emit model->alertReceived(tr("The server replied with the following BAD response:\n%1").arg(resp->message));
             }
-            logout(tr("Server has greeted us with a BAD response"));
+            abortConnection(tr("Server has greeted us with a BAD response"));
             return true;
 
         default:
@@ -209,8 +225,15 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
         if (resp->tag == startTlsCmd) {
             if (resp->kind == OK) {
                 model->changeConnectionState(parser, CONN_STATE_STARTTLS_HANDSHAKE);
+                if (!model->m_startTls) {
+                    // The model was not configured to perform STARTTLS, but we still did that for some reason.
+                    // As suggested by Mike Cardwell on the trojita ML (http://article.gmane.org/gmane.mail.trojita.general/299),
+                    // it makes sense to make this settings permanent, so that a user is not tricked into revealing their
+                    // password when a MITM removes the LOGINDISABLED in future.
+                    EMIT_LATER_NOARG(model, requireStartTlsInFuture);
+                }
             } else {
-                logout(tr("STARTTLS failed: %1").arg(resp->message));
+                abortConnection(tr("Cannot establish a secure connection.\nThe STARTTLS command failed: %1").arg(resp->message));
             }
             return true;
         }
@@ -238,8 +261,8 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
     {
         bool wasCaps = checkCapabilitiesResult(resp);
         if (wasCaps && !_finished) {
-            if (model->accessParser(parser).capabilities.contains(QLatin1String("LOGINDISABLED"))) {
-                logout(tr("Capabilities still contain LOGINDISABLED even after STARTTLS"));
+            if (model->accessParser(parser).capabilities.contains(QStringLiteral("LOGINDISABLED"))) {
+                abortConnection(tr("Server error: Capabilities contain LOGINDISABLED even after STARTTLS"));
             } else {
                 model->changeConnectionState(parser, CONN_STATE_LOGIN);
                 askForAuth();
@@ -255,9 +278,10 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
             loginCmd.clear();
             // The LOGIN command is finished
             if (resp->kind == OK) {
+                model->setImapAuthError(QString());
                 if (resp->respCode == CAPABILITIES || model->accessParser(parser).capabilitiesFresh) {
                     // Capabilities are already known
-                    if (TROJITA_COMPRESS_DEFLATE && model->accessParser(parser).capabilities.contains(QLatin1String("COMPRESS=DEFLATE"))) {
+                    if (TROJITA_COMPRESS_DEFLATE && model->accessParser(parser).capabilities.contains(QStringLiteral("COMPRESS=DEFLATE"))) {
                         compressCmd = parser->compressDeflate();
                         model->changeConnectionState(parser, CONN_STATE_COMPRESS_DEFLATE);
                     } else {
@@ -302,14 +326,17 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
                 if (message.isEmpty()) {
                     message = tr("Login failed: %1").arg(resp->message);
                 } else {
-                    message = tr("%1\n\n%2").arg(message, resp->message);
+                    message = tr("%1 %2").arg(message, resp->message);
                 }
-                emit model->authAttemptFailed(message);
+
+                model->setImapAuthError(message);
+                EMIT_LATER(model, authAttemptFailed, Q_ARG(QString, message));
+
                 model->m_imapPassword.clear();
-                model->m_hasImapPassword = false;
+                model->m_hasImapPassword = Model::PasswordAvailability::NOT_REQUESTED;
                 if (model->accessParser(parser).connState == CONN_STATE_LOGOUT) {
                     // The server has closed the conenction
-                    _failed(QLatin1String("Connection closed after a failed login"));
+                    _failed(QStringLiteral("Connection closed after a failed login"));
                     return true;
                 }
                 askForAuth();
@@ -349,11 +376,11 @@ bool OpenConnectionTask::handleStateHelper(const Imap::Responses::State *const r
 /** @short Either call STARTTLS or go ahead and try to LOGIN */
 void OpenConnectionTask::startTlsOrLoginNow()
 {
-    if (model->m_startTls || model->accessParser(parser).capabilities.contains(QLatin1String("LOGINDISABLED"))) {
+    if (model->m_startTls || model->accessParser(parser).capabilities.contains(QStringLiteral("LOGINDISABLED"))) {
         // Should run STARTTLS later and already have the capabilities
         Q_ASSERT(model->accessParser(parser).capabilitiesFresh);
-        if (!model->accessParser(parser).capabilities.contains(QLatin1String("STARTTLS"))) {
-            logout(tr("Server does not support STARTTLS"));
+        if (!model->accessParser(parser).capabilities.contains(QStringLiteral("STARTTLS"))) {
+            abortConnection(tr("Server error: LOGINDISABLED but no STARTTLS capability. The login is effectively disabled entirely."));
         } else {
             startTlsCmd = parser->startTls();
             model->changeConnectionState(parser, CONN_STATE_STARTTLS_ISSUED);
@@ -373,11 +400,11 @@ bool OpenConnectionTask::checkCapabilitiesResult(const Responses::State *const r
 
     if (resp->tag == capabilityCmd) {
         if (!model->accessParser(parser).capabilitiesFresh) {
-            logout(tr("Server did not provide useful capabilities"));
+            abortConnection(tr("Server error: did not get the required CAPABILITY response."));
             return true;
         }
         if (resp->kind != Responses::OK) {
-            logout(tr("CAPABILITIES command has failed"));
+            abortConnection(tr("Server error: The CAPABILITY request failed."));
         }
         return true;
     }
@@ -388,44 +415,66 @@ bool OpenConnectionTask::checkCapabilitiesResult(const Responses::State *const r
 void OpenConnectionTask::onComplete()
 {
     // Optionally issue the ID command
-    if (model->accessParser(parser).capabilities.contains(QLatin1String("ID"))) {
-        model->m_taskFactory->createIdTask(model, this);
+    if (model->accessParser(parser).capabilities.contains(QStringLiteral("ID"))) {
+        Imap::Mailbox::ImapTask *task = model->m_taskFactory->createIdTask(model, this);
+        task->perform();
     }
-    // Optionally enable QRESYNC
-    if (model->accessParser(parser).capabilities.contains(QLatin1String("QRESYNC")) &&
-            model->accessParser(parser).capabilities.contains(QLatin1String("ENABLE"))) {
-        model->m_taskFactory->createEnableTask(model, this, QList<QByteArray>() << QByteArray("QRESYNC"));
+    // Optionally enable extensions which need enabling
+    if (model->accessParser(parser).capabilities.contains(QStringLiteral("ENABLE"))) {
+        QList<QByteArray> extensions;
+
+        if (model->accessParser(parser).capabilities.contains(QStringLiteral("QRESYNC"))) {
+            extensions << "QRESYNC";
+        }
+
+        if (!extensions.isEmpty()) {
+            model->m_taskFactory->createEnableTask(model, this, extensions)->perform();
+        }
     }
 
     // But do terminate this task
     _completed();
 }
 
-void OpenConnectionTask::logout(const QString &message)
+void OpenConnectionTask::abortConnection(const QString &message)
 {
     _failed(message);
-    model->setNetworkOffline();
+    EMIT_LATER(model, authAttemptFailed, Q_ARG(QString, message));
+    model->setNetworkPolicy(NETWORK_OFFLINE);
 }
 
 void OpenConnectionTask::askForAuth()
 {
-    if (model->m_hasImapPassword) {
+    switch(model->m_hasImapPassword) {
+    case Model::PasswordAvailability::NOT_REQUESTED:
+        model->m_hasImapPassword = Model::PasswordAvailability::ASKED_WAITING;
+        EMIT_LATER_NOARG(model, authRequested);
+        break;
+    case Model::PasswordAvailability::ASKED_WAITING:
+        // do nothing, it has been already requested by the GUI
+        model->logTrace(parser->parserId(), Common::LOG_OTHER, QLatin1String("imap.password"),
+                        QLatin1String("Password already requested, will wait"));
+        break;
+    case Model::PasswordAvailability::AVAILABLE:
         Q_ASSERT(loginCmd.isEmpty());
         loginCmd = parser->login(model->m_imapUser, model->m_imapPassword);
         model->accessParser(parser).capabilitiesFresh = false;
-    } else {
-        emit model->authRequested();
+        break;
     }
 }
 
 void OpenConnectionTask::authCredentialsNowAvailable()
 {
     if (model->accessParser(parser).connState == CONN_STATE_LOGIN && loginCmd.isEmpty()) {
-        if (model->m_hasImapPassword) {
+        switch (model->m_hasImapPassword) {
+        case Model::PasswordAvailability::NOT_REQUESTED:
+        case Model::PasswordAvailability::ASKED_WAITING:
+            abortConnection(tr("Cannot login, you have not provided any credentials yet."));
+            break;
+        case Model::PasswordAvailability::AVAILABLE:
             loginCmd = parser->login(model->m_imapUser, model->m_imapPassword);
             model->accessParser(parser).capabilitiesFresh = false;
-        } else {
-            logout(tr("No credentials available"));
+            break;
         }
     }
 }
@@ -452,7 +501,7 @@ void OpenConnectionTask::sslConnectionPolicyDecided(bool ok)
         if (ok) {
             model->changeConnectionState(parser, CONN_STATE_CONNECTED_PRETLS_PRECAPS);
         } else {
-            logout(tr("The security state of the SSL connection got rejected"));
+            abortConnection(tr("The security state of the SSL connection got rejected"));
         }
         break;
     case CONN_STATE_STARTTLS_VERIFYING:
@@ -461,7 +510,7 @@ void OpenConnectionTask::sslConnectionPolicyDecided(bool ok)
             model->accessParser(parser).capabilitiesFresh = false;
             capabilityCmd = parser->capability();
         } else {
-            logout(tr("The security state of the connection after a STARTTLS operation got rejected"));
+            abortConnection(tr("The security state of the connection after a STARTTLS operation got rejected"));
         }
         break;
     default:
@@ -485,8 +534,9 @@ bool OpenConnectionTask::handleSocketEncryptedResponse(const Responses::SocketEn
         m_sslErrors = resp->sslErrors;
         model->processSslErrors(this);
         return true;
+    case CONN_STATE_LOGOUT:
+        return true;
     default:
-        qDebug() << model->accessParser(parser).connState;
         return false;
     }
 }

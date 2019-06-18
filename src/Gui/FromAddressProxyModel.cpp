@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -48,7 +48,7 @@ QVariant FromAddressProxyModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid())
         return QVariant();
-    if (role != Qt::DisplayRole)
+    if (role != Qt::DisplayRole && role != Qt::EditRole)
         return QSortFilterProxyModel::data(index, role);
     QModelIndex sourceIndex = mapToSource(index);
     Q_ASSERT(sourceIndex.isValid());
@@ -56,7 +56,7 @@ QVariant FromAddressProxyModel::data(const QModelIndex &index, int role) const
     QModelIndex emailIndex = sourceIndex.sibling(sourceIndex.row(), Composer::SenderIdentitiesModel::COLUMN_EMAIL);
     Q_ASSERT(nameIndex.isValid());
     Q_ASSERT(emailIndex.isValid());
-    return QString::fromUtf8("%1 <%2>").arg(nameIndex.data().toString(), emailIndex.data().toString());
+    return QStringLiteral("%1 <%2>").arg(nameIndex.data().toString(), emailIndex.data().toString());
 }
 
 }

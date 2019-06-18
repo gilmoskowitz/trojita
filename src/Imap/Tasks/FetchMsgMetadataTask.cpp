@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,17 +22,17 @@
 
 
 #include "FetchMsgMetadataTask.h"
-#include "ItemRoles.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
-#include "MailboxTree.h"
 
 namespace Imap
 {
 namespace Mailbox
 {
 
-FetchMsgMetadataTask::FetchMsgMetadataTask(Model *model, const QModelIndex &mailbox, const QList<uint> &uids) :
+FetchMsgMetadataTask::FetchMsgMetadataTask(Model *model, const QModelIndex &mailbox, const Imap::Uids &uids) :
     ImapTask(model), mailbox(mailbox), uids(uids)
 {
     Q_ASSERT(!uids.isEmpty());
@@ -47,18 +47,17 @@ void FetchMsgMetadataTask::perform()
 
     IMAP_TASK_CHECK_ABORT_DIE;
 
-    Sequence seq = Sequence::fromList(uids);
+    Sequence seq = Sequence::fromVector(uids);
 
     // we do not want to use _onlineMessageFetch because it contains UID and FLAGS
-    tag = parser->uidFetch(seq, QStringList() << QLatin1String("ENVELOPE") << QLatin1String("INTERNALDATE") <<
-                           QLatin1String("BODYSTRUCTURE") << QLatin1String("RFC822.SIZE") <<
-                           QLatin1String("BODY.PEEK[HEADER.FIELDS (References List-Post)]"));
+    tag = parser->uidFetch(seq, QList<QByteArray>() << "ENVELOPE" << "INTERNALDATE" <<
+                           "BODYSTRUCTURE" << "RFC822.SIZE" << "BODY.PEEK[HEADER.FIELDS (References List-Post)]");
 }
 
 bool FetchMsgMetadataTask::handleFetch(const Imap::Responses::Fetch *const resp)
 {
     if (! mailbox.isValid()) {
-        _failed("handleFetch: mailbox disappeared");
+        _failed(tr("handleFetch: mailbox disappeared"));
         // FIXME: nice error handling
         return false;
     }
@@ -78,7 +77,7 @@ bool FetchMsgMetadataTask::handleStateHelper(const Imap::Responses::State *const
         if (resp->kind == Responses::OK) {
             _completed();
         } else {
-            _failed("UID FETCH failed");
+            _failed(tr("UID FETCH failed"));
             // FIXME: error handling
         }
         return true;
@@ -90,11 +89,11 @@ bool FetchMsgMetadataTask::handleStateHelper(const Imap::Responses::State *const
 QString FetchMsgMetadataTask::debugIdentification() const
 {
     if (!mailbox.isValid())
-        return QLatin1String("[invalid mailbox]");
+        return QStringLiteral("[invalid mailbox]");
 
     Q_ASSERT(!uids.isEmpty());
-    return QString::fromUtf8("%1: UIDs %2").arg(mailbox.data(RoleMailboxName).toString(),
-                                                QString::fromUtf8(Sequence::fromList(uids).toByteArray()));
+    return QStringLiteral("%1: UIDs %2").arg(mailbox.data(RoleMailboxName).toString(),
+                                                QString::fromUtf8(Sequence::fromVector(uids).toByteArray()));
 }
 
 QVariant FetchMsgMetadataTask::taskData(const int role) const

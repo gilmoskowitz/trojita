@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,14 +22,18 @@
 #include "DeletionWatcher.h"
 #include <QDebug>
 
+namespace Streams {
+
 DeletionWatcher::DeletionWatcher(QObject *parent, QObject *what) :
     QObject(parent)
 {
-    connect(what, SIGNAL(destroyed()), this, SLOT(handleDeleted()));
+    connect(what, &QObject::destroyed, this, &DeletionWatcher::handleDeleted);
 }
 
 void DeletionWatcher::handleDeleted()
 {
     qDebug() << "DELETING" << sender() << sender()->objectName();
     deleteLater();
+}
+
 }

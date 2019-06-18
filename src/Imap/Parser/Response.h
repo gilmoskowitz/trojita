@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -33,6 +33,7 @@
 #include "../Exceptions.h"
 #include "Data.h"
 #include "ThreadingNode.h"
+#include "Uids.h"
 
 #ifdef _MSC_VER
 // Disable warnings about throw/nothrow
@@ -208,10 +209,7 @@ enum Code {
 class AbstractResponse
 {
 public:
-    /** @short Kind of reponse */
-    Kind kind;
-    AbstractResponse(): kind(BAD) {}
-    explicit AbstractResponse(const Kind kind): kind(kind) {}
+    AbstractResponse() {}
     virtual ~AbstractResponse();
     /** @short Helper for operator<<() */
     virtual QTextStream &dump(QTextStream &) const = 0;
@@ -302,7 +300,7 @@ class Capability : public AbstractResponse
 public:
     /** @short List of capabilities */
     QStringList capabilities;
-    Capability(const QStringList &_caps) : AbstractResponse(CAPABILITY), capabilities(_caps) {}
+    Capability(const QStringList &capabilities): capabilities(capabilities) {}
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -313,9 +311,10 @@ public:
 class NumberResponse : public AbstractResponse
 {
 public:
+    Kind kind;
     /** @short Number that we're storing */
     uint number;
-    NumberResponse(const Kind _kind, const uint _num) throw(UnexpectedHere);
+    NumberResponse(const Kind kind, const uint number) throw(UnexpectedHere);
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -342,10 +341,10 @@ public:
     QMap<QByteArray, QVariant> extendedData;
 
     /** @short Parse line and construct List object from it */
-    List(const Kind _kind, const QByteArray &line, int &start);
+    List(const Kind kind, const QByteArray &line, int &start);
     List(const Kind kind, const QStringList &flags, const QString &separator, const QString &mailbox,
          const QMap<QByteArray, QVariant> &extendedData):
-        AbstractResponse(LIST), kind(kind), flags(flags), separator(separator), mailbox(mailbox), extendedData(extendedData) {}
+        kind(kind), flags(flags), separator(separator), mailbox(mailbox), extendedData(extendedData) {}
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -355,7 +354,7 @@ public:
 struct NamespaceData {
     QString prefix;
     QString separator;
-    NamespaceData(const QString &_prefix, const QString &_separator): prefix(_prefix), separator(_separator) {};
+    NamespaceData(const QString &prefix, const QString &separator): prefix(prefix), separator(separator) {};
     bool operator==(const NamespaceData &other) const;
     bool operator!=(const NamespaceData &other) const;
     static QList<NamespaceData> listFromLine(const QByteArray &line, int &start);
@@ -368,9 +367,9 @@ public:
     QList<NamespaceData> personal, users, other;
     /** @short Parse line and construct List object from it */
     Namespace(const QByteArray &line, int &start);
-    Namespace(const QList<NamespaceData> &_personal, const QList<NamespaceData> &_users,
-              const QList<NamespaceData> &_other):
-        personal(_personal), users(_users), other(_other) {};
+    Namespace(const QList<NamespaceData> &personal, const QList<NamespaceData> &users,
+              const QList<NamespaceData> &other):
+        personal(personal), users(users), other(other) {};
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -384,7 +383,7 @@ class Flags : public AbstractResponse
 public:
     /** @short List of flags */
     QStringList flags;
-    Flags(const QStringList &_flags) : AbstractResponse(FLAGS), flags(_flags) {};
+    Flags(const QStringList &flags) : flags(flags) {};
     Flags(const QByteArray &line, int &start);
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
@@ -397,9 +396,9 @@ class Search : public AbstractResponse
 {
 public:
     /** @short List of matching messages */
-    QList<uint> items;
+    Uids items;
     Search(const QByteArray &line, int &start);
-    Search(const QList<uint> &_items) : AbstractResponse(SEARCH), items(_items) {};
+    Search(const Uids &items) : items(items) {};
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -417,7 +416,7 @@ public:
     } SequencesOrUids;
 
     /** @short Convenience typedef for the received data of the list type */
-    typedef QList<QPair<QByteArray, QList<uint> > > ListData_t;
+    typedef QVector<QPair<QByteArray, Uids>> ListData_t;
 
     /** @short Compare identifiers of the ListData_t list */
     template <typename T>
@@ -461,9 +460,9 @@ public:
         uint offset;
 
         /** @short Sequence of UIDs to apply */
-        QList<uint> uids;
+        Uids uids;
 
-        ContextIncrementalItem(const Modification modification, const uint offset, const QList<uint> &uids):
+        ContextIncrementalItem(const Modification modification, const uint offset, const Uids &uids):
             modification(modification), offset(offset), uids(uids) {}
 
         bool operator==(const ContextIncrementalItem &other) const {
@@ -511,11 +510,11 @@ public:
 
     ESearch(const QByteArray &line, int &start);
     ESearch(const QByteArray &tag, const SequencesOrUids seqOrUids, const ListData_t &listData) :
-        AbstractResponse(ESEARCH), tag(tag), seqOrUids(seqOrUids), listData(listData) {}
+        tag(tag), seqOrUids(seqOrUids), listData(listData) {}
     ESearch(const QByteArray &tag, const SequencesOrUids seqOrUids, const IncrementalContextData_t &incrementalContextData) :
-        AbstractResponse(ESEARCH), tag(tag), seqOrUids(seqOrUids), incrementalContextData(incrementalContextData) {}
+        tag(tag), seqOrUids(seqOrUids), incrementalContextData(incrementalContextData) {}
     ESearch(const QByteArray &tag, const SequencesOrUids seqOrUids, const IncrementalThreadingData_t &incThreadData):
-        AbstractResponse(ESEARCH), tag(tag), seqOrUids(seqOrUids), incThreadData(incThreadData) {}
+        tag(tag), seqOrUids(seqOrUids), incThreadData(incThreadData) {}
     virtual QTextStream &dump(QTextStream &stream) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -542,8 +541,8 @@ public:
     /** @short Associative array of states */
     stateDataType states;
 
-    Status(const QString &_mailbox, const stateDataType &_states) :
-        AbstractResponse(STATUS), mailbox(_mailbox), states(_states) {};
+    Status(const QString &mailbox, const stateDataType &states) :
+        mailbox(mailbox), states(states) {};
     Status(const QByteArray &line, int &start);
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
@@ -564,8 +563,8 @@ public:
     /** @short Fetched items */
     dataType data;
 
-    Fetch(const uint _number, const QByteArray &line, int &start);
-    Fetch(const uint _number, const dataType &_data);
+    Fetch(const uint number, const QByteArray &line, int &start);
+    Fetch(const uint number, const dataType &data);
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -579,9 +578,9 @@ class Sort : public AbstractResponse
 {
 public:
     /** @short List of sequence/UID numbers as returned by the server */
-    QList<uint> numbers;
+    Uids numbers;
     Sort(const QByteArray &line, int &start);
-    Sort(const QList<uint> &items): AbstractResponse(SORT), numbers(items) {}
+    Sort(const Uids &items): numbers(items) {}
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -595,7 +594,7 @@ public:
     /** @short List of "top-level" messages */
     QVector<ThreadingNode> rootItems;
     Thread(const QByteArray &line, int &start);
-    Thread(const QVector<ThreadingNode> &items): AbstractResponse(THREAD), rootItems(items) {}
+    Thread(const QVector<ThreadingNode> &items): rootItems(items) {}
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -609,7 +608,7 @@ public:
     /** @short List of sequence/UID numbers as returned by the server */
     QMap<QByteArray,QByteArray> data;
     Id(const QByteArray &line, int &start);
-    Id(const QMap<QByteArray,QByteArray> &items): AbstractResponse(ID), data(items) {}
+    Id(const QMap<QByteArray,QByteArray> &items): data(items) {}
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -622,7 +621,7 @@ class Enabled: public AbstractResponse
 public:
     QList<QByteArray> extensions;
     Enabled(const QByteArray &line, int &start);
-    Enabled(const QList<QByteArray> &extensions): AbstractResponse(ENABLED), extensions(extensions) {}
+    Enabled(const QList<QByteArray> &extensions): extensions(extensions) {}
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -635,9 +634,9 @@ class Vanished: public AbstractResponse
 public:
     typedef enum {EARLIER, NOT_EARLIER} EarlierOrNow;
     EarlierOrNow earlier;
-    QList<uint> uids;
+    Uids uids;
     Vanished(const QByteArray &line, int &start);
-    Vanished(EarlierOrNow earlier, const QList<uint> &uids): AbstractResponse(VANISHED), earlier(earlier), uids(uids) {}
+    Vanished(EarlierOrNow earlier, const Uids &uids): earlier(earlier), uids(uids) {}
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -650,7 +649,7 @@ class GenUrlAuth: public AbstractResponse
 public:
     QString url;
     GenUrlAuth(const QByteArray &line, int &start);
-    GenUrlAuth(const QString &url): AbstractResponse(GENURLAUTH), url(url) {}
+    GenUrlAuth(const QString &url): url(url) {}
     virtual QTextStream &dump(QTextStream &s) const;
     virtual bool eq(const AbstractResponse &other) const;
     virtual void plug(Imap::Parser *parser, Imap::Mailbox::Model *model) const;
@@ -688,7 +687,7 @@ class ParseErrorResponse : public AbstractResponse
 {
 public:
     QString message;
-    QByteArray exceptionClass;
+    QString exceptionClass;
     QByteArray line;
     int offset;
     explicit ParseErrorResponse(const ImapException &e);

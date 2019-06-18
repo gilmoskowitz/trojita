@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -137,9 +137,20 @@ namespace LowLevelParser {
 
     main := ( optional_field | references | obs_references | list_post | message_id | obs_message_id
         | in_reply_to | obs_in_reply_to)* @err(header_error) CRLF*;
+}%%
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#if defined(__has_warning) && __has_warning("-Wunused-const-variable")
+#pragma clang diagnostic ignored "-Wunused-const-variable"
+#endif
+#endif
+%%{
     write data;
 }%%
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 Rfc5322HeaderParser::Rfc5322HeaderParser():
     listPostNo(false), m_error(false)

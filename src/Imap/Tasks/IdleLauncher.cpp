@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,8 +22,8 @@
 
 #include <QTimer>
 #include "IdleLauncher.h"
+#include "Imap/Model/Model.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
 
 namespace Imap
 {
@@ -34,7 +34,7 @@ IdleLauncher::IdleLauncher(KeepMailboxOpenTask *parent):
     QObject(parent), task(parent), m_idling(false), m_idleCommandRunning(false)
 {
     delayedEnter = new QTimer(this);
-    delayedEnter->setObjectName(QString::fromUtf8("%1-IdleLauncher-delayedEnter").arg(task->objectName()));
+    delayedEnter->setObjectName(QStringLiteral("%1-IdleLauncher-delayedEnter").arg(task->objectName()));
     delayedEnter->setSingleShot(true);
     // It's a question about what timeout to set here -- if it's too long, we enter IDLE too soon, before the
     // user has a chance to click on a message, but if we set it too long, we needlessly wait too long between
@@ -45,15 +45,15 @@ IdleLauncher::IdleLauncher(KeepMailboxOpenTask *parent):
     if (! ok)
         timeout = 6 * 1000;
     delayedEnter->setInterval(timeout);
-    connect(delayedEnter, SIGNAL(timeout()), this, SLOT(slotEnterIdleNow()));
+    connect(delayedEnter, &QTimer::timeout, this, &IdleLauncher::slotEnterIdleNow);
     renewal = new QTimer(this);
-    renewal->setObjectName(QString::fromUtf8("%1-IdleLauncher-renewal").arg(task->objectName()));
+    renewal->setObjectName(QStringLiteral("%1-IdleLauncher-renewal").arg(task->objectName()));
     renewal->setSingleShot(true);
     timeout = parent->model->property("trojita-imap-idle-renewal").toUInt(&ok);
     if (! ok)
         timeout = 1000 * 29 * 60; // 29 minutes -- that's the longest allowed time to IDLE
     renewal->setInterval(timeout);
-    connect(renewal, SIGNAL(timeout()), this, SLOT(slotTerminateLongIdle()));
+    connect(renewal, &QTimer::timeout, this, &IdleLauncher::slotTerminateLongIdle);
 }
 
 void IdleLauncher::slotEnterIdleNow()
@@ -124,7 +124,7 @@ void IdleLauncher::idleCommandCompleted()
 {
     // FIXME: these asseerts could be triggered by a rogue server...
     if (m_idling) {
-        task->log("Warning: IDLE completed before we could ask for its termination...", Common::LOG_MAILBOX_SYNC);
+        task->log(QStringLiteral("Warning: IDLE completed before we could ask for its termination..."), Common::LOG_MAILBOX_SYNC);
         m_idling = false;
         renewal->stop();
         task->parser->idleMagicallyTerminatedByServer();

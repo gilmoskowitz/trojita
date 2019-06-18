@@ -163,7 +163,7 @@ void QwwSmtpClientPrivate::_q_readFromSocket() {
                     // stage 0 completed with success - socket is connected and EHLO was sent
                     if(stage==1 && status==250){
                         QString arg = rx.cap(2).trimmed();
-                        parseOption(arg);   // we're probably receving options
+                        parseOption(arg);   // we're probably receiving options
                     }
                 }
                 break;
@@ -330,12 +330,12 @@ void QwwSmtpClientPrivate::_q_readFromSocket() {
                 } else if ((cmd.type == SMTPCommand::Mail && status==354 && stage==2)) {
                     // DATA command accepted
                     errorString.clear();
-                    QByteArray toBeWritten = cmd.data.toList().at(2).toString().toUtf8();
+                    QByteArray toBeWritten = cmd.data.toList().at(2).toByteArray();
                     qDebug() << "SMTP >>>" << toBeWritten << "\r\n.\r\n";
                     socket->write(toBeWritten); // expecting data to be already escaped (CRLF.CRLF)
                     socket->write("\r\n.\r\n"); // termination token - CRLF.CRLF
                     cmd.extra=3;
-                } else if ((cmd.type == SMTPCommand::MailBurl && status==354 && stage==2)) {
+                } else if ((cmd.type == SMTPCommand::MailBurl && status==250 && stage==2)) {
                     // BURL succeeded
                     setState(QwwSmtpClient::Connected);
                     errorString.clear();
@@ -379,7 +379,7 @@ void QwwSmtpClientPrivate::processNextCommand(bool ok) {
         emit q->done(false);
         return;
     }
-    const SMTPCommand &cmd = commandqueue.head();
+    SMTPCommand &cmd = commandqueue.head();
     switch (cmd.type) {
     case SMTPCommand::Connect: {
         QString hostName = cmd.data.toList().at(0).toString();
@@ -407,6 +407,23 @@ void QwwSmtpClientPrivate::processNextCommand(bool ok) {
     break;
     case SMTPCommand::Authenticate: {
         QwwSmtpClient::AuthMode authmode = (QwwSmtpClient::AuthMode)cmd.data.toList().at(0).toInt();
+
+        if (authmode == QwwSmtpClient::AuthAny){
+            bool modified = false;
+            if (authModes.testFlag(QwwSmtpClient::AuthPlain)) {
+                authmode = QwwSmtpClient::AuthPlain;
+                modified = true;
+            } else if (authModes.testFlag(QwwSmtpClient::AuthLogin)) {
+                authmode = QwwSmtpClient::AuthLogin;
+                modified = true;
+            }
+            if (modified) {
+                QVariantList data = cmd.data.toList();
+                data[0] = (int)authmode;
+                cmd.data = data;
+            }
+        }
+
         switch (authmode) {
         case QwwSmtpClient::AuthPlain:
             qDebug() << "SMTP >>> AUTH PLAIN";
@@ -419,8 +436,8 @@ void QwwSmtpClientPrivate::processNextCommand(bool ok) {
             setState(QwwSmtpClient::Authenticating);
             break;
         default:
-            qWarning("Unsupported or unknown authentication scheme");
-            //processNextCommand(false);
+            errorString = QwwSmtpClient::tr("Unsupported or unknown authentication scheme");
+            emit q->done(false);
         }
     }
     break;
@@ -623,10 +640,6 @@ void QwwSmtpClient::setLocalNameEncrypted(const QString & ln) {
 
 
 int QwwSmtpClient::authenticate(const QString &user, const QString &password, AuthMode mode) {
-    if(mode==AuthAny){
-    	// negotiate
-    	mode = AuthLogin;
-    }
     SMTPCommand cmd;
     cmd.type = SMTPCommand::Authenticate;
     cmd.data = QVariantList() << (int)mode << user << password;
@@ -637,17 +650,7 @@ int QwwSmtpClient::authenticate(const QString &user, const QString &password, Au
     return cmd.id;
 }
 
-int QwwSmtpClient::sendMail(const QString & from, const QString & to, const QString & content) {
-    /* Any code sending to addresses that are still character-strings instead of
-       byte strings is probably buggy, but we might as well have a convenience
-       method here for it anyway. This method will frequently not do the right
-       thing, but it will do the wrong thing conveniently. */
-    QList<QByteArray> rcpts;
-    rcpts.append(to.toUtf8());
-    return sendMail(from.toUtf8(), rcpts, content);
-}
-
-int QwwSmtpClient::sendMail(const QByteArray &from, const QList<QByteArray> &to, const QString &content)
+int QwwSmtpClient::sendMail(const QByteArray &from, const QList<QByteArray> &to, const QByteArray &content)
 {
     QList<QVariant> rcpts;
     for(QList<QByteArray>::const_iterator it = to.begin(); it != to.end(); it ++) {
@@ -663,7 +666,7 @@ int QwwSmtpClient::sendMail(const QByteArray &from, const QList<QByteArray> &to,
     return cmd.id;
 }
 
-int QwwSmtpClient::sendMailBurl(const QByteArray &from, const QList<QByteArray> &to, const QString &url)
+int QwwSmtpClient::sendMailBurl(const QByteArray &from, const QList<QByteArray> &to, const QByteArray &url)
 {
     QList<QVariant> rcpts;
     for(QList<QByteArray>::const_iterator it = to.begin(); it != to.end(); it ++) {

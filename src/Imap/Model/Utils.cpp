@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -20,64 +20,32 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "Utils.h"
-#include <cmath>
-#include <QDateTime>
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-#include <QDesktopServices>
-#else
-#include <QStandardPaths>
-#endif
+#include <QAbstractProxyModel>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QGuiApplication>
 #include <QLocale>
 #include <QProcess>
-#include <QSslError>
+#include <QSettings>
+#include <QSslCertificate>
+#include <QSslKey>
 #include <QSysInfo>
-#include <QTextDocument>
+
+#include "Common/Paths.h"
+#include "Common/SettingsNames.h"
+#include "Imap/Model/NetworkPolicy.h"
 
 #ifdef TROJITA_MOBILITY_SYSTEMINFO
 #include <QSystemDeviceInfo>
 #endif
 
-namespace Imap
-{
-namespace Mailbox
-{
-
-QString PrettySize::prettySize(uint bytes, const ShowBytesSuffix compactUnitFormat)
-{
-    if (bytes == 0) {
-        return tr("0");
-    }
-    int order = std::log(static_cast<double>(bytes)) / std::log(1024.0);
-    double number = bytes / std::pow(1024.0, order);
-
-    QString suffix;
-    if (order <= 0) {
-        if (compactUnitFormat == COMPACT_FORM)
-            return QString::number(bytes);
-        else
-            return tr("%1 bytes").arg(QString::number(bytes));
-    } else if (order == 1) {
-        suffix = tr("kB");
-    } else if (order == 2) {
-        suffix = tr("MB");
-    } else if (order == 3) {
-        suffix = tr("GB");
-    } else {
-        // make sure not to show wrong size for those that have > 1024 TB e-mail messages
-        order = 4;
-        suffix = tr("TB"); // shame on you for such mails
-    }
-    return tr("%1 %2").arg(QString::number(number, 'f', number < 100 ? 1 : 0), suffix);
-}
+namespace Imap {
+namespace Mailbox {
 
 QString persistentLogFileName()
 {
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    QString logFileName = QDesktopServices::storageLocation(QDesktopServices::CacheLocation);
-#else
-    QString logFileName = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-#endif
+    QString logFileName = Common::writablePath(Common::LOCATION_CACHE);
     if (logFileName.isEmpty()) {
         logFileName = QDir::homePath() + QLatin1String("/.trojita-connection-log");
     } else {
@@ -89,7 +57,7 @@ QString persistentLogFileName()
 
 QString systemPlatformVersion()
 {
-    QString os = QLatin1String(""
+    QString os = QStringLiteral(""
 #ifdef Q_OS_AIX
                                     "AIX"
 #endif
@@ -179,27 +147,9 @@ QString systemPlatformVersion()
                                    );
 #ifdef Q_OS_UNIX
     if (os.isEmpty()) {
-        os = "Unix";
+        os = QStringLiteral("Unix");
     }
 #endif
-
-    QString ws = ""
-#ifdef Q_WS_X11
-                 "X11"
-#endif
-#ifdef Q_WS_S60
-                 "S60"
-#endif
-#ifdef Q_WS_MAC
-                 "Mac"
-#endif
-#ifdef Q_WS_QWS
-                 "QWS"
-#endif
-#ifdef Q_WS_WIN
-                 "Win"
-#endif
-                 ;
 
     static QString platformVersion;
 #ifdef TROJITA_MOBILITY_SYSTEMINFO
@@ -213,123 +163,152 @@ QString systemPlatformVersion()
     }
 #endif
     if (platformVersion.isEmpty()) {
-#ifdef Q_OS_WIN32
+#if defined(Q_OS_WIN32) || defined(Q_OS_WINCE)
         switch (QSysInfo::WindowsVersion) {
         case QSysInfo::WV_32s:
-            platformVersion = "3.1";
+            platformVersion = QLatin1String("3.1");
             break;
         case QSysInfo::WV_95:
-            platformVersion = "95";
+            platformVersion = QLatin1String("95");
             break;
         case QSysInfo::WV_98:
-            platformVersion = "98";
+            platformVersion = QLatin1String("98");
             break;
         case QSysInfo::WV_Me:
-            platformVersion = "Me";
+            platformVersion = QLatin1String("Me");
             break;
         case QSysInfo::WV_NT:
-            platformVersion = "NT";
+            platformVersion = QLatin1String("NT");
             break;
         case QSysInfo::WV_2000:
-            platformVersion = "2000";
+            platformVersion = QLatin1String("2000");
             break;
         case QSysInfo::WV_XP:
-            platformVersion = "XP";
+            platformVersion = QLatin1String("XP");
             break;
         case QSysInfo::WV_2003:
-            platformVersion = "2003";
+            platformVersion = QLatin1String("2003");
             break;
         case QSysInfo::WV_VISTA:
-            platformVersion = "Vista";
+            platformVersion = QLatin1String("Vista");
             break;
         case QSysInfo::WV_WINDOWS7:
-            platformVersion = "7";
+            platformVersion = QLatin1String("7");
             break;
-        }
+        case QSysInfo::WV_WINDOWS8:
+            platformVersion = QLatin1String("8");
+            break;
+        case QSysInfo::WV_WINDOWS8_1:
+            platformVersion = QLatin1String("8.1");
+            break;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 5, 0)
+        case QSysInfo::WV_WINDOWS10:
+            platformVersion = QLatin1String("10");
+            break;
 #endif
-#ifdef Q_OS_WINCE
-        switch (QSysInfo::WindowsVersion) {
         case QSysInfo::WV_CE:
-            platformVersion = "CE";
+            platformVersion = QLatin1String("CE");
             break;
         case QSysInfo::WV_CENET:
-            platformVersion = "CE.NET";
+            platformVersion = QLatin1String("CE.NET");
             break;
         case QSysInfo::WV_CE_5:
-            platformVersion = "CE5.x";
+            platformVersion = QLatin1String("CE5.x");
             break;
         case QSysInfo::WV_CE_6:
-            platformVersion = "CE6.x";
+            platformVersion = QLatin1String("CE6.x");
             break;
-        }
+        case QSysInfo::WV_DOS_based:
+            platformVersion = QLatin1String("DOS-based");
+            break;
+        case QSysInfo::WV_NT_based:
+            platformVersion = QLatin1String("NT-based");
+            break;
+        case QSysInfo::WV_CE_based:
+            platformVersion = QLatin1String("CE-based");
+            break;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 5, 0)
+        case QSysInfo::WV_None:
+            platformVersion = QLatin1String("non-Windows");
+            break;
 #endif
-#ifdef Q_WS_S60
-switch (QSysInfo:s60Version()) {
-        case QSysInfo::SV_S60_3_1:
-            platformVersion = "S60r3fp1";
-            break;
-        case QSysInfo::SV_S60_3_2:
-            platformVersion = "S60r3fp2";
-            break;
-        case QSysInfo::SV_S60_5_0:
-            platformVersion = "S60r5";
-            break;
-        case QSysInfo::SV_S60_5_1:
-            platformVersion = "S60r5fp1";
-            break;
-        case QSysInfo::SV_S60_5_2:
-            platformVersion = "S60r5fp2";
-            break;
-        case QSysInfo::SV_S60_Unnown:
-            platformVersion = "SV_Unknown";
-            break;
-        }
-#endif
-#ifdef Q_OS_SYMBIAN
-        switch (QSysInfo::symbianVersion()) {
-        case QSysInfo::SV_SF_1:
-            platformVersion = "Symbian^1";
-            break;
-        case QSysInfo::SV_SF_2:
-            platformVersion = "Symbian^2";
-            break;
-        case QSysInfo::SV_SF_3:
-            platformVersion = "Symbian^3";
-            break;
-        case QSysInfo::SV_SF_4:
-            platformVersion = "Symbian^4";
-            break;
         }
 #endif
 #ifdef Q_OS_MAC
         switch (QSysInfo::MacintoshVersion) {
         case QSysInfo::MV_9:
-            platformVersion = "9.0";
+            platformVersion = QLatin1String("9.0");
             break;
         case QSysInfo::MV_10_0:
-            platformVersion = "X 10.0";
+            platformVersion = QLatin1String("X 10.0");
             break;
         case QSysInfo::MV_10_1:
-            platformVersion = "X 10.1";
+            platformVersion = QLatin1String("X 10.1");
             break;
         case QSysInfo::MV_10_2:
-            platformVersion = "X 10.2";
+            platformVersion = QLatin1String("X 10.2");
             break;
         case QSysInfo::MV_10_3:
-            platformVersion = "X 10.3";
+            platformVersion = QLatin1String("X 10.3");
             break;
         case QSysInfo::MV_10_4:
-            platformVersion = "X 10.4";
+            platformVersion = QLatin1String("X 10.4");
             break;
         case QSysInfo::MV_10_5:
-            platformVersion = "X 10.5";
+            platformVersion = QLatin1String("X 10.5");
             break;
         case QSysInfo::MV_10_6:
-            platformVersion = "X 10.6";
+            platformVersion = QLatin1String("X 10.6");
             break;
-#if QT_VERSION >= 0x040800
         case QSysInfo::MV_10_7:
-            platformVersion = "X 10.7";
+            platformVersion = QLatin1String("X 10.7");
+            break;
+        case QSysInfo::MV_10_8:
+            platformVersion = QLatin1String("X 10.8");
+            break;
+        case QSysInfo::MV_10_9:
+            platformVersion = QLatin1String("X 10.9");
+            break;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 4, 0)
+        case QSysInfo::MV_10_10:
+            platformVersion = QLatin1String("X 10.10");
+            break;
+#endif
+        case QSysInfo::MV_IOS:
+            platformVersion = QLatin1String("iOS");
+            break;
+        case QSysInfo::MV_IOS_4_3:
+            platformVersion = QLatin1String("iOS 4.3");
+            break;
+        case QSysInfo::MV_IOS_5_0:
+            platformVersion = QLatin1String("iOS 5.0");
+            break;
+        case QSysInfo::MV_IOS_5_1:
+            platformVersion = QLatin1String("iOS 5.1");
+            break;
+        case QSysInfo::MV_IOS_6_0:
+            platformVersion = QLatin1String("iOS 6.0");
+            break;
+        case QSysInfo::MV_IOS_6_1:
+            platformVersion = QLatin1String("iOS 6.1");
+            break;
+        case QSysInfo::MV_IOS_7_0:
+            platformVersion = QLatin1String("iOS 7.0");
+            break;
+        case QSysInfo::MV_IOS_7_1:
+            platformVersion = QLatin1String("iOS 7.1");
+            break;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 4, 0)
+        case QSysInfo::MV_IOS_8_0:
+            platformVersion = QLatin1String("iOS 8.0");
+            break;
+#endif
+        case QSysInfo::MV_Unknown:
+            platformVersion = QLatin1String("iOS (unknown)");
+            break;
+#if QT_VERSION >= QT_VERSION_CHECK(5, 5, 0)
+        case QSysInfo::MV_None:
+            platformVersion = QLatin1String("non-Mac");
             break;
 #endif
         }
@@ -337,156 +316,13 @@ switch (QSysInfo:s60Version()) {
         if (platformVersion.isEmpty()) {
             // try to call the lsb_release
             QProcess *proc = new QProcess(0);
-            proc->start("lsb_release", QStringList() << QLatin1String("-s") << QLatin1String("-d"));
+            proc->start(QStringLiteral("lsb_release"), QStringList() << QStringLiteral("-s") << QStringLiteral("-d"));
             proc->waitForFinished();
-            platformVersion = QString::fromLocal8Bit(proc->readAll()).trimmed().replace(QLatin1String("\""), QString()).replace(QLatin1String(";"), QLatin1String(","));
+            platformVersion = QString::fromLocal8Bit(proc->readAll()).trimmed().replace(QLatin1Char('"'), QString()).replace(QLatin1Char(';'), QLatin1Char(','));
             proc->deleteLater();
         }
     }
-    return QString::fromUtf8("Qt/%1; %2; %3; %4").arg(qVersion(), ws, os, platformVersion);
-}
-
-/** @short Produce a properly formatted HTML string which won't overflow the right edge of the display */
-QByteArray CertificateUtils::htmlHexifyByteArray(const QByteArray &rawInput)
-{
-    QByteArray inHex = rawInput.toHex();
-    QByteArray res;
-    const int stepping = 4;
-    for (int i = 0; i < inHex.length(); i += stepping) {
-        // The individual blocks are formatted separately to allow line breaks to happen
-        res.append("<code style=\"font-family: monospace;\">");
-        res.append(inHex.mid(i, stepping));
-        if (i + stepping < inHex.size()) {
-            res.append(":");
-        }
-        // Produce the smallest possible space. "display: none" won't notice the space at all, leading to overly long lines
-        res.append("</code><span style=\"font-size: 1px\"> </span>");
-    }
-    return res;
-}
-
-QString CertificateUtils::chainToHtml(const QList<QSslCertificate> &sslChain)
-{
-    QStringList certificateStrings;
-    Q_FOREACH(const QSslCertificate &cert, sslChain) {
-        certificateStrings << tr("<li><b>CN</b>: %1,<br/>\n<b>Organization</b>: %2,<br/>\n"
-                                 "<b>Serial</b>: %3,<br/>\n"
-                                 "<b>SHA1</b>: %4,<br/>\n<b>MD5</b>: %5</li>").arg(
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-                                  cert.subjectInfo(QSslCertificate::CommonName).join(tr(", ")).toHtmlEscaped(),
-                                  cert.subjectInfo(QSslCertificate::Organization).join(tr(", ")).toHtmlEscaped(),
-#else
-                                  Qt::escape(cert.subjectInfo(QSslCertificate::CommonName)),
-                                  Qt::escape(cert.subjectInfo(QSslCertificate::Organization)),
-#endif
-                                  cert.serialNumber(),
-                                  htmlHexifyByteArray(cert.digest(QCryptographicHash::Sha1)),
-                                  htmlHexifyByteArray(cert.digest(QCryptographicHash::Md5)));
-    }
-    return sslChain.isEmpty() ?
-                tr("<p>The remote side doesn't have a certificate.</p>\n") :
-                tr("<p>This is the certificate chain of the connection:</p>\n<ul>%1</ul>\n").arg(certificateStrings.join(tr("\n")));
-}
-
-QString CertificateUtils::errorsToHtml(const QList<QSslError> &sslErrors)
-{
-    QStringList sslErrorStrings;
-    Q_FOREACH(const QSslError &e, sslErrors) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-        sslErrorStrings << tr("<li>%1</li>").arg(e.errorString().toHtmlEscaped());
-#else
-        sslErrorStrings << tr("<li>%1</li>").arg(Qt::escape(e.errorString()));
-#endif
-    }
-    return sslErrors.isEmpty() ?
-                QString("<p>According to your system's policy, this connection is secure.</p>\n") :
-                tr("<p>The connection triggered the following SSL errors:</p>\n<ul>%1</ul>\n").arg(sslErrorStrings.join(tr("\n")));
-}
-
-void CertificateUtils::formatSslState(const QList<QSslCertificate> &sslChain, const QList<QSslCertificate> &oldSslChain,
-                                      const QByteArray &oldCertificatePem, const QList<QSslError> &sslErrors,
-                                      QString *title, QString *message, IconType *icon)
-{
-    bool certificateHasChanged = sslChain != oldSslChain && ! oldCertificatePem.isEmpty();
-    bool wasAboutToExpire = sslChain.first().expiryDate() < QDateTime::currentDateTime().addDays(14);
-    bool sameTrustChain = sslChain.size() > 1 && sslChain.size() == oldSslChain.size() &&
-            std::equal(sslChain.constBegin() + 1, sslChain.constEnd(), oldSslChain.constBegin() + 1);
-
-    if (certificateHasChanged) {
-        if (sslErrors.isEmpty()) {
-            if (sameTrustChain) {
-                // The only difference is in the first certificate of the chain
-                if (wasAboutToExpire) {
-                    // It was going to expire in two weeks; it's probably fair to assume that this is a regular replacement
-                    *icon = Information;
-                    *title = tr("Renewed SSL certificate");
-                    *message = tr("<p>The IMAP server got a new SSL certificate from the same Certificate Authority; "
-                                  "the old one was about to expire soon.  It is probably safe to trust this certificate."
-                                  "</p>\n%1\n<p>Would you like to proceed and remember the new certificate?</p>").
-                            arg(chainToHtml(sslChain));
-                } else {
-                    // The old one was not about to expire; that doesn't mean that there's a problem, though
-                    *icon = Question;
-                    *title = tr("Renewed SSL certificate");
-                    *message = tr("<p>The IMAP server got a new SSL certificate from the same Certificate Authority (CA), "
-                                  "even though the old one was still valid.</p>\n"
-                                  "%1\n<p>Would you like to proceed and remember the new certificate?</p>").
-                            arg(chainToHtml(sslChain));
-                }
-            } else {
-                // Another certificate with completely different CA, but trusted anyway
-                *icon = Warning;
-                *title = tr("Different SSL certificate");
-                *message = tr("<p>The SSL certificate has changed and is issued by another Certificate Authority (CA). "
-                              "Your system configuration is set to accept such certificates anyway.</p>\n%1\n"
-                              "<p>Would you like to connect and remember the new certificate?</p>")
-                        .arg(chainToHtml(sslChain));
-            }
-        } else {
-            // changed certificate which is not trusted per systemwide policy
-            if (sameTrustChain) {
-                if (wasAboutToExpire) {
-                    *icon = Information;
-                    *title = tr("Renewed SSL certificate");
-                    *message = tr("<p>The IMAP server got a new SSL certificate from the same Certificate Authority; "
-                                  "the old one was about to expire soon.</p>\n%1\n%2\n"
-                                  "<p>Would you like to proceed and remember the new certificate?</p>").
-                            arg(chainToHtml(sslChain), errorsToHtml(sslErrors));
-                } else {
-                    *icon = Question;
-                    *title = tr("Renewed SSL certificate");
-                    *message = tr("<p>The IMAP server got a new SSL certificate from the same Certificate Authority (CA), "
-                                  "even though the old one was still valid.</p>\n%1\n%2\n"
-                                  "<p>Would you like to proceed and remember the new certificate?</p>").
-                            arg(chainToHtml(sslChain), errorsToHtml(sslErrors));
-                }
-            } else {
-                *title = tr("SSL looks fishy");
-                *message = tr("<p>The SSL certificate of the IMAP server has changed since the last time and your system doesn't "
-                              "believe that the new certificate is genuine.</p>\n%1\n%2\n"
-                              "<p>Would you like to connect anyway and remember the new certificate?</p>").
-                        arg(chainToHtml(sslChain), errorsToHtml(sslErrors));
-                *icon = Critical;
-            }
-        }
-    } else {
-        if (sslErrors.isEmpty()) {
-            // this is the first time and the certificate looks valid -> accept
-            *title = tr("Accept SSL connection?");
-            *message = tr("<p>This is the first time you're connecting to this IMAP server; the certificate is trusted "
-                          "by this system.</p>\n%1\n%2\n"
-                          "<p>Would you like to connect and remember this certificate for the next time?</p>")
-                    .arg(chainToHtml(sslChain), errorsToHtml(sslErrors));
-            *icon = Information;
-        } else {
-            *title = tr("Accept SSL connection?");
-            *message = tr("<p>This is the first time you're connecting to this IMAP server and the server certificate failed "
-                          "validation test.</p>\n%1\n\n%2\n"
-                          "<p>Would you like to connect and remember this certificate for the next time?</p>")
-                    .arg(chainToHtml(sslChain), errorsToHtml(sslErrors));
-            *icon = Question;
-        }
-    }
+    return QStringLiteral("Qt/%1; %2; %3; %4").arg(QString::fromUtf8(qVersion()), QGuiApplication::platformName(), os, platformVersion);
 }
 
 }
@@ -512,7 +348,7 @@ QString formatDateTimeWithTimeZoneAtEnd(const QDateTime &now, const QString &for
     int tzOffsetMinutes = qAbs(minutesDifference) % 60;
     // The rest is just a piece of cake now
 
-    return QLocale(QLatin1String("C")).toString(now, format) +
+    return QLocale(QStringLiteral("C")).toString(now, format) +
             QLatin1String(minutesDifference >= 0 ? "+" : "-") +
             QString::number(tzOffsetHours).rightJustified(2, QLatin1Char('0')) +
             QString::number(tzOffsetMinutes).rightJustified(2, QLatin1Char('0'));
@@ -521,13 +357,110 @@ QString formatDateTimeWithTimeZoneAtEnd(const QDateTime &now, const QString &for
 /** @short Return current date in the RFC2822 format */
 QString dateTimeToRfc2822(const QDateTime &now)
 {
-    return formatDateTimeWithTimeZoneAtEnd(now, QLatin1String("ddd, dd MMM yyyy hh:mm:ss "));
+    return formatDateTimeWithTimeZoneAtEnd(now, QStringLiteral("ddd, dd MMM yyyy hh:mm:ss "));
 }
 
 /** @short Return current date in the RFC3501's INTERNALDATE format */
 QString dateTimeToInternalDate(const QDateTime &now)
 {
-    return formatDateTimeWithTimeZoneAtEnd(now, QLatin1String("dd-MMM-yyyy hh:mm:ss "));
+    return formatDateTimeWithTimeZoneAtEnd(now, QStringLiteral("dd-MMM-yyyy hh:mm:ss "));
+}
+
+/** @short Migrate old application settings to the new format */
+void migrateSettings(QSettings *settings)
+{
+    using Common::SettingsNames;
+
+    // Process the obsolete settings about the "cache backend". This has been changed to "offline stuff" after v0.3.
+    if (settings->value(SettingsNames::cacheMetadataKey).toString() == SettingsNames::cacheMetadataMemory) {
+        settings->setValue(SettingsNames::cacheOfflineKey, SettingsNames::cacheOfflineNone);
+        settings->remove(SettingsNames::cacheMetadataKey);
+
+        // Also remove the older values used for cache lifetime management which were not used, but set to zero by default
+        settings->remove(QStringLiteral("offline.sync"));
+        settings->remove(QStringLiteral("offline.sync.days"));
+        settings->remove(QStringLiteral("offline.sync.messages"));
+    }
+
+    // Migrate the "last known certificate" from the full PEM format to just the pubkey
+    QByteArray lastKnownCertPem = settings->value(SettingsNames::obsImapSslPemCertificate).toByteArray();
+    if (!lastKnownCertPem.isEmpty()) {
+        QList<QSslCertificate> oldChain = QSslCertificate::fromData(lastKnownCertPem, QSsl::Pem);
+        if (!oldChain.isEmpty()) {
+            settings->setValue(SettingsNames::imapSslPemPubKey, oldChain[0].publicKey().toPem());
+        }
+    }
+    settings->remove(SettingsNames::obsImapSslPemCertificate);
+
+    // Migration of the sender identities
+    bool needsIdentityMigration = settings->beginReadArray(SettingsNames::identitiesKey) == 0;
+    settings->endArray();
+    if (needsIdentityMigration) {
+        QString realName = settings->value(SettingsNames::obsRealNameKey).toString();
+        QString email = settings->value(SettingsNames::obsAddressKey).toString();
+        if (!realName.isEmpty() || !email.isEmpty()) {
+            settings->beginWriteArray(SettingsNames::identitiesKey);
+            settings->setArrayIndex(0);
+            settings->setValue(SettingsNames::realNameKey, realName);
+            settings->setValue(SettingsNames::addressKey, email);
+            settings->endArray();
+            settings->remove(Common::SettingsNames::obsRealNameKey);
+            settings->remove(Common::SettingsNames::obsAddressKey);
+        }
+    }
+
+    QVariant offlineSetting = settings->value(SettingsNames::obsImapStartOffline);
+    if (offlineSetting.isValid()) {
+        settings->setValue(SettingsNames::imapStartMode, offlineSetting.toBool() ? Common::SettingsNames::netOffline : Common::SettingsNames::netOnline);
+        settings->remove(SettingsNames::obsImapStartOffline);
+    }
+
+    const QString obsImapEnableId = QStringLiteral("imap.enableId");
+    auto enableId = settings->value(obsImapEnableId);
+    if (enableId.isValid() && enableId.toBool() == false && !settings->contains(Common::SettingsNames::interopRevealVersions)) {
+        settings->setValue(Common::SettingsNames::interopRevealVersions, QVariant(false));
+        settings->remove(obsImapEnableId);
+    }
+}
+
+/** @short Return the matching QModelIndex after stripping all proxy layers */
+QModelIndex deproxifiedIndex(const QModelIndex& index)
+{
+    QModelIndex res = index;
+    while (const QAbstractProxyModel *proxy = qobject_cast<const QAbstractProxyModel *>(res.model())) {
+        res = proxy->mapToSource(res);
+    }
+    return res;
+}
+
+/** @short Recursively removes a directory and all its contents
+
+This by some crazy voodoo unintentional 'magic', is almost identical
+to a solution by John Schember, which was pointed out by jkt.
+
+http://john.nachtimwald.com/2010/06/08/qt-remove-directory-and-its-contents/
+*/
+bool removeRecursively(const QString &dirName)
+{
+    bool result = true;
+    QDir dir = dirName;
+
+    if (dir.exists(dirName)) {
+        Q_FOREACH(const QFileInfo &fileInfo,
+                  dir.entryInfoList(QDir::NoDotAndDotDot | QDir::System | QDir::Hidden  | QDir::AllDirs | QDir::Files,
+                                    QDir::DirsFirst)) {
+            if (fileInfo.isDir()) {
+                result = removeRecursively(fileInfo.absoluteFilePath());
+            } else {
+                result = QFile::remove(fileInfo.absoluteFilePath());
+            }
+            if (!result) {
+                return result;
+            }
+        }
+        result = dir.rmdir(dirName);
+    }
+    return result;
 }
 
 }

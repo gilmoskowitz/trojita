@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,11 +22,11 @@
 
 
 #include "UpdateFlagsTask.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/MailboxTree.h"
+#include "Imap/Model/Model.h"
 #include "CopyMoveMessagesTask.h"
-#include "ItemRoles.h"
 #include "KeepMailboxOpenTask.h"
-#include "MailboxTree.h"
-#include "Model.h"
 
 namespace Imap
 {
@@ -47,9 +47,9 @@ UpdateFlagsTask::UpdateFlagsTask(Model *model, const QModelIndexList &messages_,
     conn->addDependentTask(this);
 }
 
-UpdateFlagsTask::UpdateFlagsTask(Model *_model, CopyMoveMessagesTask *copyTask, const QList<QPersistentModelIndex> &_messages,
-                                 const FlagsOperation _flagOperation, const QString &_flags):
-    ImapTask(_model), conn(0), copyMove(copyTask), messages(_messages), flagOperation(_flagOperation), flags(_flags)
+UpdateFlagsTask::UpdateFlagsTask(Model *model, CopyMoveMessagesTask *copyTask, const QList<QPersistentModelIndex> &messages,
+                                 const FlagsOperation flagOperation, const QString &flags):
+    ImapTask(model), conn(0), copyMove(copyTask), messages(messages), flagOperation(flagOperation), flags(flags)
 {
     copyTask->addDependentTask(this);
 }
@@ -70,7 +70,7 @@ void UpdateFlagsTask::perform()
 
     Q_FOREACH(const QPersistentModelIndex& index, messages) {
         if (!index.isValid()) {
-            log("Some message got removed before we could update its flags", Common::LOG_MESSAGES);
+            log(QStringLiteral("Some message got removed before we could update its flags"), Common::LOG_MESSAGES);
         } else {
             TreeItem *item = static_cast<TreeItem *>(index.internalPointer());
             Q_ASSERT(item);
@@ -94,9 +94,10 @@ void UpdateFlagsTask::perform()
                 Q_ASSERT(list);
                 QStringList newFlags = message->m_flags;
                 newFlags.removeOne(flags);
-                message->setFlags(list, newFlags , false);
+                message->setFlags(list, newFlags);
                 // we don't have to either re-sort or call Model::normalizeFlags again from this context;
                 // this will change when the model starts de-duplicating whole lists
+                model->cache()->setMsgFlags(static_cast<TreeItemMailbox*>(list->parent())->mailbox(), message->uid(), newFlags);
                 break;
             }
             case FLAG_ADD_SILENT:
@@ -106,7 +107,8 @@ void UpdateFlagsTask::perform()
                 QStringList newFlags = message->m_flags;
                 if (!newFlags.contains(flags)) {
                     newFlags << flags;
-                    message->setFlags(list, model->normalizeFlags(newFlags), false);
+                    message->setFlags(list, model->normalizeFlags(newFlags));
+                    model->cache()->setMsgFlags(static_cast<TreeItemMailbox*>(list->parent())->mailbox(), message->uid(), newFlags);
                 }
                 break;
             }
@@ -116,30 +118,10 @@ void UpdateFlagsTask::perform()
 
     if (first) {
         // No valid messages
-        _failed("All messages got removed before we could've updated their flags");
+        _failed(tr("All messages got removed before we could've updated their flags"));
         return;
     }
-
-    QString op;
-    switch (flagOperation) {
-    case FLAG_ADD:
-        op = QLatin1String("+FLAGS");
-        break;
-    case FLAG_REMOVE:
-        op = QLatin1String("-FLAGS");
-        break;
-    case FLAG_ADD_SILENT:
-        op = QLatin1String("+FLAGS.SILENT");
-        break;
-    case FLAG_REMOVE_SILENT:
-        op = QLatin1String("-FLAGS.SILENT");
-        break;
-    case FLAG_USE_THESE:
-        op = QLatin1String("FLAGS");
-        break;
-    }
-    Q_ASSERT(!op.isEmpty());
-    tag = parser->uidStore(seq, op, flags);
+    tag = parser->uidStore(seq, toImapString(flagOperation), flags);
 }
 
 bool UpdateFlagsTask::handleStateHelper(const Imap::Responses::State *const resp)
@@ -153,13 +135,12 @@ bool UpdateFlagsTask::handleStateHelper(const Imap::Responses::State *const resp
             // nothing should be needed here
             _completed();
         } else {
-            _failed("Failed to update FLAGS");
+            _failed(tr("Failed to update FLAGS"));
             // FIXME: error handling
         }
         return true;
-    } else {
-        return false;
     }
+    return false;
 }
 
 QVariant UpdateFlagsTask::taskData(const int role) const

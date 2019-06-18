@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,17 +24,16 @@
 #include <QTimer>
 #include "FakeSocket.h"
 
-namespace Imap
-{
+namespace Streams {
 
-FakeSocket::FakeSocket()
+FakeSocket::FakeSocket(const Imap::ConnectionState initialState): m_initialState(initialState)
 {
     readChannel = new QBuffer(&r, this);
     readChannel->open(QIODevice::ReadWrite);
     writeChannel = new QBuffer(&w, this);
     writeChannel->open(QIODevice::WriteOnly);
     QTimer::singleShot(0, this, SLOT(slotEmitConnected()));
-    connect(readChannel, SIGNAL(readyRead()), this, SIGNAL(readyRead()));
+    connect(readChannel, &QIODevice::readyRead, this, &Socket::readyRead);
 }
 
 FakeSocket::~FakeSocket()
@@ -43,8 +42,16 @@ FakeSocket::~FakeSocket()
 
 void FakeSocket::slotEmitConnected()
 {
+    if (m_initialState == Imap::CONN_STATE_LOGOUT) {
+        // Special case: a fake socket factory for unconfigured accounts.
+        emit disconnected(QString());
+        return;
+    }
+
     // We have to use both conventions for letting the world know that "we're finally usable"
-    emit stateChanged(Imap::CONN_STATE_CONNECTED_PRETLS_PRECAPS, QString());
+    if (m_initialState != Imap::CONN_STATE_CONNECTED_PRETLS_PRECAPS)
+        emit stateChanged(Imap::CONN_STATE_CONNECTED_PRETLS_PRECAPS, QString());
+    emit stateChanged(m_initialState, QString());
 }
 
 void FakeSocket::slotEmitEncrypted()
@@ -73,6 +80,12 @@ void FakeSocket::fakeReading(const QByteArray &what)
     readChannel->seek(r.size());
     readChannel->write(what);
     readChannel->seek(pos);
+}
+
+void FakeSocket::fakeDisconnect(const QString &message)
+{
+    readChannel->write(QString::fromUtf8("[*** disconnected: %1 ***]").arg(message).toUtf8());
+    emit disconnected(message);
 }
 
 bool FakeSocket::canReadLine()

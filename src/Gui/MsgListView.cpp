@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -27,22 +27,24 @@
 #include <QDrag>
 #include <QFontMetrics>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QPainter>
 #include <QSignalMapper>
+#include <QTimer>
 #include "Imap/Model/MsgListModel.h"
 #include "Imap/Model/PrettyMsgListModel.h"
 
 namespace Gui
 {
 
-MsgListView::MsgListView(QWidget *parent): QTreeView(parent)
+MsgListView::MsgListView(QWidget *parent): QTreeView(parent), m_autoActivateAfterKeyNavigation(true), m_autoResizeSections(true)
 {
-    connect(header(), SIGNAL(geometriesChanged()), this, SLOT(slotFixSize()));
-    connect(this, SIGNAL(expanded(QModelIndex)), this, SLOT(slotExpandWholeSubtree(QModelIndex)));
-    connect(header(), SIGNAL(sectionCountChanged(int,int)), this, SLOT(slotSectionCountChanged()));
+    connect(header(), &QHeaderView::geometriesChanged, this, &MsgListView::slotFixSize);
+    connect(this, &QTreeView::expanded, this, &MsgListView::slotExpandWholeSubtree);
+    connect(header(), &QHeaderView::sectionCountChanged, this, &MsgListView::slotUpdateHeaderActions);
     header()->setContextMenuPolicy(Qt::ActionsContextMenu);
     headerFieldsMapper = new QSignalMapper(this);
-    connect(headerFieldsMapper, SIGNAL(mapped(int)), this, SLOT(slotHeaderSectionVisibilityToggled(int)));
+    connect(headerFieldsMapper, static_cast<void (QSignalMapper::*)(int)>(&QSignalMapper::mapped), this, &MsgListView::slotHeaderSectionVisibilityToggled);
 
     setUniformRowHeights(true);
     setAllColumnsShowFocus(true);
@@ -55,6 +57,61 @@ MsgListView::MsgListView(QWidget *parent): QTreeView(parent)
     setSortingEnabled(true);
     // By default, we don't do any sorting
     header()->setSortIndicator(-1, Qt::AscendingOrder);
+
+    m_naviActivationTimer = new QTimer(this);
+    m_naviActivationTimer->setSingleShot(true);
+    connect(m_naviActivationTimer, &QTimer::timeout, this, &MsgListView::slotCurrentActivated);
+}
+
+// left might collapse a thread, question is whether ending there (on closing the thread) should be
+// taken as mail loading request (i don't think so, but it's sth. that needs to be figured over time)
+// NOTICE: reasonably Triggers should be a (non strict) subset of Blockers (user changed his mind)
+
+// the list of key events which pot. lead to loading a new message.
+static QList<int> gs_naviActivationTriggers = QList<int>() << Qt::Key_Up << Qt::Key_Down
+                                                           << Qt::Key_PageUp << Qt::Key_PageDown
+                                                           << Qt::Key_Home << Qt::Key_End;
+// the list of key events which cancel naviActivationTrigger induced action.
+static QList<int> gs_naviActivationBlockers = QList<int>() << Qt::Key_Up << Qt::Key_Down << Qt::Key_Left
+                                                           << Qt::Key_PageUp << Qt::Key_PageDown
+                                                           << Qt::Key_Home << Qt::Key_End;
+
+
+void MsgListView::keyPressEvent(QKeyEvent *ke)
+{
+    if (gs_naviActivationBlockers.contains(ke->key()))
+        m_naviActivationTimer->stop();
+    QTreeView::keyPressEvent(ke);
+}
+
+void MsgListView::keyReleaseEvent(QKeyEvent *ke)
+{
+    if (ke->modifiers() == Qt::NoModifier && gs_naviActivationTriggers.contains(ke->key()))
+        m_naviActivationTimer->start(150); // few ms for the user to re-orientate. 150ms is not much
+    QTreeView::keyReleaseEvent(ke);
+}
+
+bool MsgListView::event(QEvent *event)
+{
+    if (event->type() == QEvent::ShortcutOverride
+            && !gs_naviActivationBlockers.contains(static_cast<QKeyEvent*>(event)->key())
+            && m_naviActivationTimer->isActive()) {
+        // Make sure that the delayed timer is broken ASAP when the key looks like something which might possibly be a shortcut
+        m_naviActivationTimer->stop();
+        slotCurrentActivated();
+    }
+    return QTreeView::event(event);
+}
+
+void MsgListView::slotCurrentActivated()
+{
+    if (currentIndex().isValid() && m_autoActivateAfterKeyNavigation) {
+        // The "current index" is the one with that funny dot which only triggers the read/unread status toggle.
+        // If we don't do anything, subsequent pressing of key_up or key_down will move the cursor up/down one row
+        // while preserving the column which will lead to toggling the read/unread state of *that* message.
+        // That's unexpected; the key shall just move the cursor and change the current message.
+        emit activated(currentIndex().sibling(currentIndex().row(), Imap::Mailbox::MsgListModel::SUBJECT));
+    }
 }
 
 int MsgListView::sizeHintForColumn(int column) const
@@ -64,19 +121,22 @@ int MsgListView::sizeHintForColumn(int column) const
     QFontMetrics metric(boldFont);
     switch (column) {
     case Imap::Mailbox::MsgListModel::SEEN:
-        return 16;
+        return 0;
+    case Imap::Mailbox::MsgListModel::FLAGGED:
+    case Imap::Mailbox::MsgListModel::ATTACHMENT:
+        return style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, nullptr);
     case Imap::Mailbox::MsgListModel::SUBJECT:
-        return metric.size(Qt::TextSingleLine, QLatin1String("Blesmrt Trojita Foo Bar Random Text")).width();
+        return metric.size(Qt::TextSingleLine, QStringLiteral("Blesmrt Trojita Foo Bar Random Text")).width();
     case Imap::Mailbox::MsgListModel::FROM:
     case Imap::Mailbox::MsgListModel::TO:
     case Imap::Mailbox::MsgListModel::CC:
     case Imap::Mailbox::MsgListModel::BCC:
-        return metric.size(Qt::TextSingleLine, QLatin1String("Blesmrt Trojita")).width();
+        return metric.size(Qt::TextSingleLine, QStringLiteral("Blesmrt Trojita")).width();
     case Imap::Mailbox::MsgListModel::DATE:
     case Imap::Mailbox::MsgListModel::RECEIVED_DATE:
         return metric.size(Qt::TextSingleLine,
                            //: Translators: use a text which is returned for e-mails older than one day but newer than one week
-                           //: (see Imap::Mailbox::PrettyMsgListModel::prettyFormatDate() for the string formats); the idea here
+                           //: (see UiUtils::Formatting::prettyDate() for the string formats); the idea here
                            //: is to have a text which is "wide enough" in a typical UI font.
                            //: The English version uses "Mon" because of the M letter; you should use something similar.
                            tr("Mon 10")).width();
@@ -101,7 +161,7 @@ void MsgListView::startDrag(Qt::DropActions supportedActions)
     Q_FOREACH(const QModelIndex &index, selectedIndexes()) {
         if (!(model()->flags(index) & Qt::ItemIsDragEnabled))
             continue;
-        if (index.column() == 0)
+        if (index.column() == Imap::Mailbox::MsgListModel::SUBJECT)
             baseIndexes << index;
     }
 
@@ -115,11 +175,14 @@ void MsgListView::startDrag(Qt::DropActions supportedActions)
         int maxWidth = qMax(400, screenWidth / 4);
         QSize size(maxWidth, 0);
 
+        // Show a "+ X more items" text after so many entries
+        const int maxItems = 20;
+
         QStyleOptionViewItem opt;
         opt.initFrom(this);
         opt.rect.setWidth(maxWidth);
         opt.rect.setHeight(itemDelegate()->sizeHint(opt, baseIndexes.at(0)).height());
-        size.setHeight(baseIndexes.size() * opt.rect.height());
+        size.setHeight(qMin(maxItems + 1, baseIndexes.size()) * opt.rect.height());
         // State_Selected provides for nice background of the items
         opt.state |= QStyle::State_Selected;
 
@@ -130,6 +193,12 @@ void MsgListView::startDrag(Qt::DropActions supportedActions)
 
         for (int i = 0; i < baseIndexes.size(); ++i) {
             opt.rect.moveTop(i * opt.rect.height());
+            if (i == maxItems) {
+                p.fillRect(opt.rect, palette().color(QPalette::Disabled, QPalette::Highlight));
+                p.setBrush(palette().color(QPalette::Disabled, QPalette::HighlightedText));
+                p.drawText(opt.rect, Qt::AlignRight, tr("+ %n additional item(s)", 0, baseIndexes.size() - maxItems));
+                break;
+            }
             itemDelegate()->paint(&p, opt, baseIndexes.at(i));
         }
 
@@ -176,28 +245,33 @@ void MsgListView::startDrag(Qt::DropActions supportedActions)
 
 void MsgListView::slotFixSize()
 {
-    if (header()->visualIndex(Imap::Mailbox::MsgListModel::SEEN) == -1) {
+    if (!m_autoResizeSections)
+        return;
+
+    if (header()->visualIndex(Imap::Mailbox::MsgListModel::SUBJECT) == -1) {
         // calling setResizeMode() would assert()
         return;
     }
-    header()->setStretchLastSection(false);
 
+    header()->setStretchLastSection(false);
     for (int i = 0; i < Imap::Mailbox::MsgListModel::COLUMN_COUNT; ++i) {
-        QHeaderView::ResizeMode resizeMode = QHeaderView::Interactive;
-        switch (i) {
-        case Imap::Mailbox::MsgListModel::SUBJECT:
-            resizeMode = QHeaderView::Stretch;
-            break;
-        case Imap::Mailbox::MsgListModel::SEEN:
-            resizeMode = QHeaderView::Fixed;
-            break;
-        }
-        setColumnWidth(i, sizeHintForColumn(i));
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
+        QHeaderView::ResizeMode resizeMode = resizeModeForColumn(i);
         header()->setSectionResizeMode(i, resizeMode);
-#else
-        header()->setResizeMode(i, resizeMode);
-#endif
+        setColumnWidth(i, sizeHintForColumn(i));
+    }
+}
+
+QHeaderView::ResizeMode MsgListView::resizeModeForColumn(const int column) const
+{
+    switch (column) {
+    case Imap::Mailbox::MsgListModel::SUBJECT:
+        return QHeaderView::Stretch;
+    case Imap::Mailbox::MsgListModel::SEEN:
+    case Imap::Mailbox::MsgListModel::FLAGGED:
+    case Imap::Mailbox::MsgListModel::ATTACHMENT:
+        return QHeaderView::Fixed;
+    default:
+        return QHeaderView::Interactive;
     }
 }
 
@@ -217,7 +291,7 @@ void MsgListView::slotExpandWholeSubtree(const QModelIndex &rootIndex)
     }
 }
 
-void MsgListView::slotSectionCountChanged()
+void MsgListView::slotUpdateHeaderActions()
 {
     Q_ASSERT(header());
     // At first, remove all actions
@@ -234,7 +308,7 @@ void MsgListView::slotSectionCountChanged()
         QAction *action = new QAction(message, this);
         action->setCheckable(true);
         action->setChecked(true);
-        connect(action, SIGNAL(toggled(bool)), headerFieldsMapper, SLOT(map()));
+        connect(action, &QAction::toggled, headerFieldsMapper, static_cast<void (QSignalMapper::*)()>(&QSignalMapper::map));
         headerFieldsMapper->setMapping(action, i);
         header()->addAction(action);
 
@@ -243,6 +317,12 @@ void MsgListView::slotSectionCountChanged()
         case Imap::Mailbox::MsgListModel::SEEN:
             // This column doesn't have a textual description
             action->setText(tr("Seen status"));
+            break;
+        case Imap::Mailbox::MsgListModel::FLAGGED:
+            action->setText(tr("Flagged status"));
+            break;
+        case Imap::Mailbox::MsgListModel::ATTACHMENT:
+            action->setText(tr("Attachment"));
             break;
         case Imap::Mailbox::MsgListModel::TO:
         case Imap::Mailbox::MsgListModel::CC:
@@ -260,6 +340,27 @@ void MsgListView::slotSectionCountChanged()
     slotFixSize();
 }
 
+/** @short Handle columns added to MsgListModel and set their default properties
+ *
+ * When a new version of the underlying model got a new column, the old saved state of the GUI might only contain data for the old columns.
+ * Therefore it is important to explicitly restore the default for new columns, if any.
+ */
+void MsgListView::slotHandleNewColumns(int oldCount, int newCount)
+{
+    for (int i = oldCount; i < newCount; ++i) {
+        switch(i) {
+        case Imap::Mailbox::MsgListModel::FLAGGED:
+            header()->moveSection(i,0);
+            break;
+        case Imap::Mailbox::MsgListModel::ATTACHMENT:
+            header()->moveSection(i,0);
+            break;
+        }
+
+        setColumnWidth(i, sizeHintForColumn(i));
+    }
+}
+
 void MsgListView::slotHeaderSectionVisibilityToggled(int section)
 {
     QList<QAction *> actions = header()->actions();
@@ -275,7 +376,16 @@ void MsgListView::slotHeaderSectionVisibilityToggled(int section)
     }
 }
 
-/** @short Overriden from QTreeView::setModel
+void MsgListView::updateActionsAfterRestoredState()
+{
+    m_autoResizeSections = false;
+    QList<QAction *> actions = header()->actions();
+    for (int i = 0; i < actions.size(); ++i) {
+        actions[i]->setChecked(!header()->isSectionHidden(i));
+    }
+}
+
+/** @short Overridden from QTreeView::setModel
 
 The whole point is that we have to listen for sortingPreferenceChanged to update your header view when sorting is requested
 but cannot be fulfilled.
@@ -284,14 +394,14 @@ void MsgListView::setModel(QAbstractItemModel *model)
 {
     if (this->model()) {
         if (Imap::Mailbox::PrettyMsgListModel *prettyModel = findPrettyMsgListModel(this->model())) {
-            disconnect(prettyModel, SIGNAL(sortingPreferenceChanged(int,Qt::SortOrder)),
-                       this, SLOT(slotHandleSortCriteriaChanged(int,Qt::SortOrder)));
+            disconnect(prettyModel, &Imap::Mailbox::PrettyMsgListModel::sortingPreferenceChanged,
+                       this, &MsgListView::slotHandleSortCriteriaChanged);
         }
     }
     QTreeView::setModel(model);
     if (Imap::Mailbox::PrettyMsgListModel *prettyModel = findPrettyMsgListModel(model)) {
-        connect(prettyModel, SIGNAL(sortingPreferenceChanged(int,Qt::SortOrder)),
-                this, SLOT(slotHandleSortCriteriaChanged(int,Qt::SortOrder)));
+        connect(prettyModel, &Imap::Mailbox::PrettyMsgListModel::sortingPreferenceChanged,
+                this, &MsgListView::slotHandleSortCriteriaChanged);
     }
 }
 
@@ -314,6 +424,11 @@ Imap::Mailbox::PrettyMsgListModel *MsgListView::findPrettyMsgListModel(QAbstract
             model = proxy->sourceModel();
     }
     return 0;
+}
+
+void MsgListView::setAutoActivateAfterKeyNavigation(bool enabled)
+{
+    m_autoActivateAfterKeyNavigation = enabled;
 }
 
 }

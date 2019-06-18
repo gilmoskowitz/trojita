@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -23,10 +23,11 @@
 #define SIMPLEPARTWIDGET_H
 
 #include "AbstractPartWidget.h"
-#include "EmbeddedWebView.h"
-#include "Composer/PlainTextFormatter.h"
 #include <QAction>
 #include <QFile>
+#include <QPersistentModelIndex>
+#include "EmbeddedWebView.h"
+#include "UiUtils/PlainTextFormatter.h"
 
 class QModelIndex;
 class QNetworkReply;
@@ -35,13 +36,14 @@ namespace Imap
 {
 namespace Network
 {
-class FileDownloadManager;
 class MsgPartNetAccessManager;
 }
 }
 
 namespace Gui
 {
+
+class MessageView;
 
 /** @short Widget that handles display of primitive message parts
 
@@ -53,21 +55,31 @@ class SimplePartWidget : public EmbeddedWebView, public AbstractPartWidget
 {
     Q_OBJECT
 public:
-    SimplePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &partIndex);
-    virtual QString quoteMe() const;
-    virtual void reloadContents();
-    QList<QAction *> contextMenuSpecificActions() const;
-    void connectGuiInteractionEvents(QObject *guiInteractionTarget);
+    SimplePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &partIndex,
+                     MessageView *messageView);
+    virtual QString quoteMe() const override;
+    virtual void reloadContents() override;
+    virtual void zoomIn() override;
+    virtual void zoomOut() override;
+    virtual void zoomOriginal() override;
+    void buildContextMenu(const QPoint &point, QMenu &menu) const;
 private slots:
-    void slotTransferError(const QString &errorString);
     void slotFileNameRequested(QString *fileName);
     void slotMarkupPlainText();
+    void slotDownloadPart();
+    void slotDownloadMessage();
+    void slotDownloadImage(const QNetworkRequest &req);
+protected:
 signals:
     void linkHovered(const QString &link, const QString &title, const QString &textContent);
+    void searchDialogRequested();
 private:
-    QAction *saveAction;
-    Imap::Network::FileDownloadManager *fileDownloadManager;
-    Composer::Util::FlowedFormat flowedFormat;
+    QPersistentModelIndex m_partIndex;
+    QAction *m_savePart;
+    QAction *m_saveMessage;
+    QAction *m_findAction;
+    MessageView *m_messageView;
+    Imap::Network::MsgPartNetAccessManager *m_netAccessManager;
 
     SimplePartWidget(const SimplePartWidget &); // don't implement
     SimplePartWidget &operator=(const SimplePartWidget &); // don't implement

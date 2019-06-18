@@ -1,4 +1,5 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
+   Copyright (C) 2014        Luke Dashjr <luke+trojita@dashjr.org>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,64 +25,87 @@
 namespace Common
 {
 
-QString SettingsNames::identitiesKey = QLatin1String("identities");
-QString SettingsNames::realNameKey = QLatin1String("realName");
-QString SettingsNames::addressKey = QLatin1String("address");
-QString SettingsNames::organisationKey = QLatin1String("organisation");
-QString SettingsNames::signatureKey = QLatin1String("signature");
-QString SettingsNames::obsRealNameKey = QLatin1String("identity.realName");
-QString SettingsNames::obsAddressKey = QLatin1String("identity.address");
-QString SettingsNames::msaMethodKey = QLatin1String("msa.method");
-QString SettingsNames::methodSMTP = QLatin1String("SMTP");
-QString SettingsNames::methodSSMTP = QLatin1String("SSMTP");
-QString SettingsNames::methodSENDMAIL = QLatin1String("sendmail");
-QString SettingsNames::methodImapSendmail = QLatin1String("IMAP-SENDMAIL");
-QString SettingsNames::smtpHostKey = QLatin1String("msa.smtp.host");
-QString SettingsNames::smtpPortKey = QLatin1String("msa.smtp.port");
-QString SettingsNames::smtpAuthKey = QLatin1String("msa.smtp.auth");
-QString SettingsNames::smtpStartTlsKey = QLatin1String("msa.smtp.starttls");
-QString SettingsNames::smtpUserKey = QLatin1String("msa.smtp.auth.user");
-QString SettingsNames::smtpPassKey = QLatin1String("msa.smtp.auth.pass");
-QString SettingsNames::sendmailKey = QLatin1String("msa.sendmail");
-QString SettingsNames::sendmailDefaultCmd = QLatin1String("sendmail -bm -oi");
-QString SettingsNames::smtpUseBurlKey = QLatin1String("msa.smtp.burl");
-QString SettingsNames::imapMethodKey = QLatin1String("imap.method");
-QString SettingsNames::methodTCP = QLatin1String("TCP");
-QString SettingsNames::methodSSL = QLatin1String("SSL");
-QString SettingsNames::methodProcess = QLatin1String("process");
-QString SettingsNames::imapHostKey = QLatin1String("imap.host");
-QString SettingsNames::imapPortKey = QLatin1String("imap.port");
-QString SettingsNames::imapStartTlsKey = QLatin1String("imap.starttls");
-QString SettingsNames::imapUserKey = QLatin1String("imap.auth.user");
-QString SettingsNames::imapPassKey = QLatin1String("imap.auth.pass");
-QString SettingsNames::imapProcessKey = QLatin1String("imap.process");
-QString SettingsNames::imapStartOffline = QLatin1String("imap.offline");
-QString SettingsNames::imapEnableId = QLatin1String("imap.enableId");
-QString SettingsNames::imapSslPemCertificate = QLatin1String("imap.ssl.pemCertificate");
-QString SettingsNames::imapBlacklistedCapabilities = QLatin1String("imap.capabilities.blacklist");
-QString SettingsNames::composerSaveToImapKey = QLatin1String("composer/saveToImapEnabled");
-QString SettingsNames::composerImapSentKey = QLatin1String("composer/imapSentName");
-QString SettingsNames::cacheMetadataKey = QLatin1String("offline.metadataCache");
-QString SettingsNames::cacheMetadataMemory = QLatin1String("memory");
-QString SettingsNames::cacheOfflineKey = QLatin1String("offline.cache");
-QString SettingsNames::cacheOfflineNone = QLatin1String("memory");
-QString SettingsNames::cacheOfflineXDays = QLatin1String("days");
-QString SettingsNames::cacheOfflineAll = QLatin1String("all");
-QString SettingsNames::cacheOfflineNumberDaysKey = QLatin1String("offline.cache.numDays");
-QString SettingsNames::xtConnectCacheDirectory = QLatin1String("xtconnect.cachedir");
-QString SettingsNames::xtSyncMailboxList = QLatin1String("xtconnect.listOfMailboxes");
-QString SettingsNames::xtDbHost = QLatin1String("xtconnect.db.hostname");
-QString SettingsNames::xtDbPort = QLatin1String("xtconnect.db.port");
-QString SettingsNames::xtDbDbName = QLatin1String("xtconnect.db.dbname");
-QString SettingsNames::xtDbUser = QLatin1String("xtconnect.db.username");
-QString SettingsNames::guiMsgListShowThreading = QLatin1String("gui/msgList.showThreading");
-QString SettingsNames::guiMsgListHideRead = QLatin1String("gui/msgList.hideRead");
-QString SettingsNames::guiMailboxListShowOnlySubscribed = QLatin1String("gui/mailboxList.showOnlySubscribed");
-QString SettingsNames::guiMainWindowLayout = QLatin1String("gui/mainWindow.layout");
-QString SettingsNames::guiMainWindowLayoutCompact = QLatin1String("compact");
-QString SettingsNames::guiMainWindowLayoutWide = QLatin1String("wide");
-QString SettingsNames::guiPreferPlaintextRendering = QLatin1String("gui/preferPlaintextRendering");
-QString SettingsNames::appLoadHomepage = QLatin1String("app.updates.checkEnabled");
-QString SettingsNames::knownEmailsKey = QLatin1String("addressBook/knownEmails");
+const QString SettingsNames::identitiesKey = QStringLiteral("identities");
+const QString SettingsNames::realNameKey = QStringLiteral("realName");
+const QString SettingsNames::addressKey = QStringLiteral("address");
+const QString SettingsNames::organisationKey = QStringLiteral("organisation");
+const QString SettingsNames::signatureKey = QStringLiteral("signature");
+const QString SettingsNames::obsRealNameKey = QStringLiteral("identity.realName");
+const QString SettingsNames::obsAddressKey = QStringLiteral("identity.address");
+const QString SettingsNames::msaMethodKey = QStringLiteral("msa.method");
+const QString SettingsNames::methodSMTP = QStringLiteral("SMTP");
+const QString SettingsNames::methodSSMTP = QStringLiteral("SSMTP");
+const QString SettingsNames::methodSENDMAIL = QStringLiteral("sendmail");
+const QString SettingsNames::methodImapSendmail = QStringLiteral("IMAP-SENDMAIL");
+const QString SettingsNames::smtpHostKey = QStringLiteral("msa.smtp.host");
+const QString SettingsNames::smtpPortKey = QStringLiteral("msa.smtp.port");
+const QString SettingsNames::smtpAuthKey = QStringLiteral("msa.smtp.auth");
+const QString SettingsNames::smtpStartTlsKey = QStringLiteral("msa.smtp.starttls");
+const QString SettingsNames::smtpUserKey = QStringLiteral("msa.smtp.auth.user");
+const QString SettingsNames::smtpAuthReuseImapCredsKey = QStringLiteral("msa.smtp.auth.reuseImapCredentials");
+// in use by the cleartext password plugin: "msa.smtp.auth.pass"
+const QString SettingsNames::sendmailKey = QStringLiteral("msa.sendmail");
+const QString SettingsNames::sendmailDefaultCmd = QStringLiteral("sendmail -bm -oi");
+const QString SettingsNames::smtpUseBurlKey = QStringLiteral("msa.smtp.burl");
+const QString SettingsNames::imapMethodKey = QStringLiteral("imap.method");
+const QString SettingsNames::methodTCP = QStringLiteral("TCP");
+const QString SettingsNames::methodSSL = QStringLiteral("SSL");
+const QString SettingsNames::methodProcess = QStringLiteral("process");
+const QString SettingsNames::imapHostKey = QStringLiteral("imap.host");
+const QString SettingsNames::imapPortKey = QStringLiteral("imap.port");
+const QString SettingsNames::imapStartTlsKey = QStringLiteral("imap.starttls");
+const QString SettingsNames::imapUserKey = QStringLiteral("imap.auth.user");
+// in use by the cleartext password plugin: "imap.auth.pass"
+const QString SettingsNames::imapProcessKey = QStringLiteral("imap.process");
+const QString SettingsNames::imapStartMode = QStringLiteral("imap.startmode");
+const QString SettingsNames::netOffline = QStringLiteral("OFFLINE");
+const QString SettingsNames::netExpensive = QStringLiteral("EXPENSIVE");
+const QString SettingsNames::netOnline = QStringLiteral("ONLINE");
+const QString SettingsNames::obsImapStartOffline = QStringLiteral("imap.offline");
+const QString SettingsNames::obsImapSslPemCertificate = QStringLiteral("imap.ssl.pemCertificate");
+const QString SettingsNames::imapSslPemPubKey = QStringLiteral("imap.ssl.pemPubKey");
+const QString SettingsNames::imapBlacklistedCapabilities = QStringLiteral("imap.capabilities.blacklist");
+const QString SettingsNames::imapUseSystemProxy = QStringLiteral("imap.proxy.system");
+const QString SettingsNames::imapNeedsNetwork = QStringLiteral("imap.needsNetwork");
+const QString SettingsNames::imapNumberRefreshInterval = QStringLiteral("imap.numberRefreshInterval");
+const QString SettingsNames::composerSaveToImapKey = QStringLiteral("composer/saveToImapEnabled");
+const QString SettingsNames::composerImapSentKey = QStringLiteral("composer/imapSentName");
+const QString SettingsNames::cacheMetadataKey = QStringLiteral("offline.metadataCache");
+const QString SettingsNames::cacheMetadataMemory = QStringLiteral("memory");
+const QString SettingsNames::cacheOfflineKey = QStringLiteral("offline.cache");
+const QString SettingsNames::cacheOfflineNone = QStringLiteral("memory");
+const QString SettingsNames::cacheOfflineXDays = QStringLiteral("days");
+const QString SettingsNames::cacheOfflineAll = QStringLiteral("all");
+const QString SettingsNames::cacheOfflineNumberDaysKey = QStringLiteral("offline.cache.numDays");
+const QString SettingsNames::xtConnectCacheDirectory = QStringLiteral("xtconnect.cachedir");
+const QString SettingsNames::xtSyncMailboxList = QStringLiteral("xtconnect.listOfMailboxes");
+const QString SettingsNames::xtDbHost = QStringLiteral("xtconnect.db.hostname");
+const QString SettingsNames::xtDbPort = QStringLiteral("xtconnect.db.port");
+const QString SettingsNames::xtDbDbName = QStringLiteral("xtconnect.db.dbname");
+const QString SettingsNames::xtDbUser = QStringLiteral("xtconnect.db.username");
+const QString SettingsNames::guiMsgListShowThreading = QStringLiteral("gui/msgList.showThreading");
+const QString SettingsNames::guiMsgListHideRead = QStringLiteral("gui/msgList.hideRead");
+const QString SettingsNames::guiMailboxListShowOnlySubscribed = QStringLiteral("gui/mailboxList.showOnlySubscribed");
+const QString SettingsNames::guiMainWindowLayout = QStringLiteral("gui/mainWindow.layout");
+const QString SettingsNames::guiMainWindowLayoutCompact = QStringLiteral("compact");
+const QString SettingsNames::guiMainWindowLayoutWide = QStringLiteral("wide");
+const QString SettingsNames::guiMainWindowLayoutOneAtTime = QStringLiteral("one-at-time");
+const QString SettingsNames::guiPreferPlaintextRendering = QStringLiteral("gui/preferPlaintextRendering");
+const QString SettingsNames::guiShowSystray = QStringLiteral("gui/showSystray");
+const QString SettingsNames::guiOnSystrayClose = QStringLiteral("gui/onSystrayClose");
+const QString SettingsNames::guiStartMinimized = QStringLiteral("gui/startMinimized");
+const QString SettingsNames::guiSizesInMainWinWhenCompact = QStringLiteral("gui/sizeInMainWinWhenCompact-%1");
+const QString SettingsNames::guiSizesInMainWinWhenWide = QStringLiteral("gui/sizeInMainWinWhenWide-%1");
+const QString SettingsNames::guiSizesInaMainWinWhenOneAtATime = QStringLiteral("gui/sizeInMainWinWhenOneAtATime-%1");
+const QString SettingsNames::guiAllowRawSearch = QStringLiteral("gui/allowRawSearch");
+const QString SettingsNames::guiExpandedMailboxes = QStringLiteral("gui/expandedMailboxes");
+const QString SettingsNames::appLoadHomepage = QStringLiteral("app.updates.checkEnabled");
+const QString SettingsNames::knownEmailsKey = QStringLiteral("addressBook/knownEmails");
+const QString SettingsNames::addressbookPlugin = QStringLiteral("plugin/addressbook");
+const QString SettingsNames::passwordPlugin = QStringLiteral("plugin/password");
+const QString SettingsNames::imapIdleRenewal = QStringLiteral("imapIdleRenewal");
+const QString SettingsNames::autoMarkReadEnabled = QStringLiteral("autoMarkRead/enabled");
+const QString SettingsNames::autoMarkReadSeconds = QStringLiteral("autoMarkRead/seconds");
+const QString SettingsNames::interopRevealVersions = QStringLiteral("interoperability/revealVersions");
 
 }

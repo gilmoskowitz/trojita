@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -21,9 +21,10 @@
 */
 
 #include "ImapTask.h"
+#include "Common/InvokeMethod.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/TaskPresentationModel.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
-#include "TaskPresentationModel.h"
 
 namespace Imap
 {
@@ -33,7 +34,7 @@ namespace Mailbox
 ImapTask::ImapTask(Model *model) :
     QObject(model), parser(0), parentTask(0), model(model), _finished(false), _dead(false), _aborted(false)
 {
-    connect(this, SIGNAL(destroyed(QObject *)), model, SLOT(slotTaskDying(QObject *)));
+    connect(this, &QObject::destroyed, model, &Model::slotTaskDying);
     CHECK_TASK_TREE;
 }
 
@@ -43,7 +44,7 @@ ImapTask::~ImapTask()
 
 /** @short Schedule another task to get a go when this one completes
 
-This function informs the current task (this) that when it terminates succesfully, the dependant task (@arg task) shall be started.
+This function informs the current task (this) that when it terminates successfully, the dependant task (@arg task) shall be started.
 Subclasses are free to reimplement this method (@see KeepMailboxOpenTask), but they must not forget to update the parentTask of
 the depending task.
 */
@@ -93,10 +94,10 @@ void ImapTask::markAsActiveTask(const TaskActivatingPosition place)
 
     if (model->accessParser(parser).maintainingTask && model->accessParser(parser).maintainingTask != this) {
         // Got to inform the currently responsible maintaining task about our demise
-        connect(this, SIGNAL(destroyed(QObject*)), model->accessParser(parser).maintainingTask, SLOT(slotTaskDeleted(QObject*)));
+        connect(this, &QObject::destroyed, model->accessParser(parser).maintainingTask.data(), &KeepMailboxOpenTask::slotTaskDeleted);
     }
 
-    log(tr("Activated"));
+    log(QStringLiteral("Activated"));
     CHECK_TASK_TREE
 }
 
@@ -223,7 +224,7 @@ bool ImapTask::handleParseErrorResponse(const Imap::Responses::ParseErrorRespons
 void ImapTask::_completed()
 {
     _finished = true;
-    log("Completed");
+    log(QStringLiteral("Completed"));
     Q_FOREACH(ImapTask* task, dependentTasks) {
         if (!task->isFinished())
             task->perform();
@@ -234,15 +235,15 @@ void ImapTask::_completed()
 void ImapTask::_failed(const QString &errorMessage)
 {
     _finished = true;
-    killAllPendingTasks();
-    log(QString::fromUtf8("Failed: %1").arg(errorMessage));
+    killAllPendingTasks(errorMessage);
+    log(QStringLiteral("Failed: %1").arg(errorMessage));
     emit failed(errorMessage);
 }
 
-void ImapTask::killAllPendingTasks()
+void ImapTask::killAllPendingTasks(const QString &message)
 {
     Q_FOREACH(ImapTask *task, dependentTasks) {
-        task->die();
+        task->die(message);
     }
 }
 
@@ -252,7 +253,7 @@ void ImapTask::handleResponseCode(const Imap::Responses::State *const resp)
     // Check for common stuff like ALERT and CAPABILITIES update
     switch (resp->respCode) {
     case ALERT:
-        emit model->alertReceived(tr("The server sent the following ALERT:\n%1").arg(resp->message));
+        EMIT_LATER(model, alertReceived, Q_ARG(QString, tr("The server sent the following ALERT:\n%1").arg(resp->message)));
         break;
     case CAPABILITIES:
     {
@@ -277,11 +278,11 @@ bool ImapTask::isReadyToRun() const
     return false;
 }
 
-void ImapTask::die()
+void ImapTask::die(const QString &message)
 {
     _dead = true;
     if (!_finished)
-        _failed("Asked to die");
+        _failed(message);
 }
 
 void ImapTask::abort()
@@ -304,7 +305,7 @@ void ImapTask::log(const QString &message, const Common::LogKind kind)
     if (!dbg.isEmpty()) {
         dbg.prepend(QLatin1Char(' '));
     }
-    model->logTrace(parser ? parser->parserId() : 0, kind, metaObject()->className() + dbg, message);
+    model->logTrace(parser ? parser->parserId() : 0, kind, QString::fromUtf8(metaObject()->className()) + dbg, message);
     model->m_taskModel->slotTaskMighHaveChanged(this);
 }
 

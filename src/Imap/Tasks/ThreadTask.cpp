@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,10 @@
 
 
 #include "ThreadTask.h"
-#include "ItemRoles.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
-#include "MailboxTree.h"
 
 namespace Imap
 {
@@ -50,12 +50,12 @@ void ThreadTask::perform()
     IMAP_TASK_CHECK_ABORT_DIE;
 
     if (! mailboxIndex.isValid()) {
-        _failed("Mailbox vanished before we could ask for threading info");
+        _failed(tr("Mailbox vanished before we could ask for threading info"));
         return;
     }
 
     if (m_incrementalMode) {
-        tag = parser->uidEThread(algorithm, "utf-8", searchCriteria, QStringList() << "INCTHREAD");
+        tag = parser->uidEThread(algorithm, "utf-8", searchCriteria, QStringList() << QStringLiteral("INCTHREAD"));
     } else {
         tag = parser->uidThread(algorithm, "utf-8", searchCriteria);
     }
@@ -72,7 +72,7 @@ bool ThreadTask::handleStateHelper(const Imap::Responses::State *const resp)
                 emit model->threadingAvailable(mailboxIndex, algorithm, searchCriteria, mapping);
             _completed();
         } else {
-            _failed("Threading command has failed");
+            _failed(tr("Threading command has failed"));
         }
         mapping.clear();
         return true;

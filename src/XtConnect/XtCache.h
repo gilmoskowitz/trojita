@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -48,7 +48,7 @@ class XtCache : public Imap::Mailbox::AbstractCache {
 public:
     /** @short Constructor
 
-      Create new instance, using the @arg name as the name for the database connnection.
+      Create new instance, using the @arg name as the name for the database connection.
       Store all data into the @arg cacheDir directory. Actual opening of the DB connection
       is deferred till a call to the load() method.
 */
@@ -68,9 +68,9 @@ public:
     virtual Imap::Mailbox::SyncState mailboxSyncState( const QString& mailbox ) const;
     virtual void setMailboxSyncState( const QString& mailbox, const Imap::Mailbox::SyncState& state );
 
-    virtual void setUidMapping( const QString& mailbox, const QList<uint>& seqToUid );
+    virtual void setUidMapping( const QString& mailbox, const Imap::Uids& seqToUid );
     virtual void clearUidMapping( const QString& mailbox );
-    virtual QList<uint> uidMapping( const QString& mailbox ) const;
+    virtual Imap::Uids uidMapping( const QString& mailbox ) const;
 
     virtual void clearAllMessages( const QString& mailbox );
     virtual void clearMessage( const QString mailbox, uint uid );
@@ -84,9 +84,11 @@ public:
     virtual void setMsgFlags( const QString& mailbox, uint uid, const QStringList& flags );
 
     /** @short ALways returns an empty QByteArray */
-    virtual QByteArray messagePart( const QString& mailbox, uint uid, const QString& partId ) const;
+    virtual QByteArray messagePart( const QString& mailbox, const uint uid, const QByteArray& partId ) const;
     /** @short Do nothing */
-    virtual void setMsgPart( const QString& mailbox, uint uid, const QString& partId, const QByteArray& data );
+    virtual void setMsgPart( const QString& mailbox, const uint uid, const QByteArray& partId, const QByteArray& data );
+    /** @short Do nothing */
+    virtual void forgetMessagePart( const QString& mailbox, const uint uid, const QByteArray& partId );
 
     /** @short Do nothing */
     virtual QVector<Imap::Responses::ThreadingNode> messageThreading(const QString &mailbox);

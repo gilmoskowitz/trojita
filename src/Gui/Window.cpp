@@ -1,4 +1,5 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2015 Jan Kundrát <jkt@flaska.net>
+   Copyright (C) 2013 - 2015 Pali Rohár <pali.rohar@gmail.com>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,49 +23,69 @@
 
 #include <QAuthenticator>
 #include <QDesktopServices>
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-#  include <QStandardPaths>
-#  include <QUrlQuery>
-#endif
+#include <QDesktopWidget>
 #include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QHeaderView>
-#include <QInputDialog>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressBar>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QSslError>
+#include <QSslKey>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QTextDocument>
 #include <QToolBar>
 #include <QToolButton>
+#include <QToolTip>
 #include <QUrl>
+#include <QWheelEvent>
 
+#include "configure.cmake.h"
+#include "Common/Application.h"
+#include "Common/Paths.h"
 #include "Common/PortNumbers.h"
 #include "Common/SettingsNames.h"
+#include "Composer/Mailto.h"
 #include "Composer/SenderIdentitiesModel.h"
-#include "Imap/Model/CombinedCache.h"
-#include "Imap/Model/MailboxModel.h"
+#ifdef TROJITA_HAVE_CRYPTO_MESSAGES
+#  ifdef TROJITA_HAVE_GPGMEPP
+#    include "Cryptography/GpgMe++.h"
+#  endif
+#endif
+#include "Imap/Model/ImapAccess.h"
 #include "Imap/Model/MailboxTree.h"
-#include "Imap/Model/MemoryCache.h"
 #include "Imap/Model/Model.h"
 #include "Imap/Model/ModelWatcher.h"
 #include "Imap/Model/MsgListModel.h"
+#include "Imap/Model/NetworkWatcher.h"
 #include "Imap/Model/PrettyMailboxModel.h"
 #include "Imap/Model/PrettyMsgListModel.h"
+#include "Imap/Model/SpecialFlagNames.h"
 #include "Imap/Model/ThreadingMsgListModel.h"
 #include "Imap/Model/Utils.h"
 #include "Imap/Network/FileDownloadManager.h"
-#include "AbookAddressbook.h"
+#include "MSA/ImapSubmit.h"
+#include "MSA/Sendmail.h"
+#include "MSA/SMTP.h"
+#include "Plugins/AddressbookPlugin.h"
+#include "Plugins/PasswordPlugin.h"
+#include "Plugins/PluginManager.h"
+#include "CompleteMessageWidget.h"
 #include "ComposeWidget.h"
-#include "IconLoader.h"
 #include "MailBoxTreeView.h"
 #include "MessageListWidget.h"
 #include "MessageView.h"
+#include "MessageSourceWidget.h"
+#include "Gui/MessageHeadersWidget.h"
 #include "MsgListView.h"
+#include "OnePanelAtTimeWidget.h"
+#include "PasswordDialog.h"
 #include "ProtocolLoggerWidget.h"
 #include "SettingsDialog.h"
 #include "SimplePartWidget.h"
@@ -72,34 +93,69 @@
 #include "TaskProgressIndicator.h"
 #include "Util.h"
 #include "Window.h"
+#include "ShortcutHandler/ShortcutHandler.h"
 
 #include "ui_CreateMailboxDialog.h"
+#include "ui_AboutDialog.h"
 
 #include "Imap/Model/ModelTest/modeltest.h"
-
-Q_DECLARE_METATYPE(QList<QSslCertificate>)
-#if QT_VERSION < 0x050000
-Q_DECLARE_METATYPE(QList<QSslError>)
-#endif
+#include "UiUtils/IconLoader.h"
 
 /** @short All user-facing widgets and related classes */
 namespace Gui
 {
 
-MainWindow::MainWindow(): QMainWindow(), model(0), m_actionSortNone(0), m_ignoreStoredPassword(false), m_supportsCatenate(false),
-    m_supportsGenUrlAuth(false), m_supportsImapSubmission(false)
+    static const char * const netErrorUnseen = "net_error_unseen";
+
+MainWindow::MainWindow(QSettings *settings): QMainWindow(), m_imapAccess(0), m_mainHSplitter(0), m_mainVSplitter(0),
+    m_mainStack(0), m_layoutMode(LAYOUT_COMPACT), m_skipSavingOfUI(true), m_delayedStateSaving(0), m_actionSortNone(0),
+    m_ignoreStoredPassword(false), m_settings(settings), m_pluginManager(0), m_networkErrorMessageBox(0), m_trayIcon(0)
 {
-    qRegisterMetaType<QList<QSslCertificate> >();
-    qRegisterMetaType<QList<QSslError> >();
+    setAttribute(Qt::WA_AlwaysShowToolTips);
+    // m_pluginManager must be created before calling createWidgets
+    m_pluginManager = new Plugins::PluginManager(this, m_settings,
+                                                 Common::SettingsNames::addressbookPlugin, Common::SettingsNames::passwordPlugin);
+    connect(m_pluginManager, &Plugins::PluginManager::pluginsChanged, this, &MainWindow::slotPluginsChanged);
+    connect(m_pluginManager, &Plugins::PluginManager::pluginError, this, [this](const QString &errorMessage) {
+        QMessageBox::warning(this, tr("Plugin Error"),
+                             //: The %1 placeholder is a full error message as provided by Qt, ready for human consumption.
+                             trUtf8("A plugin failed to load, therefore some functionality might be lost. "
+                                    "You might want to update your system or report a bug to your vendor."
+                                    "\n\n%1").arg(errorMessage));
+    });
+#ifdef TROJITA_HAVE_CRYPTO_MESSAGES
+    Plugins::PluginManager::MimePartReplacers replacers;
+#ifdef TROJITA_HAVE_GPGMEPP
+    replacers.emplace_back(std::make_shared<Cryptography::GpgMeReplacer>());
+#endif
+    m_pluginManager->setMimePartReplacers(replacers);
+#endif
+
+    // ImapAccess contains a wrapper for retrieving passwords through some plugin.
+    // That PasswordWatcher is used by the SettingsDialog's widgets *and* by this class,
+    // which means that ImapAccess has to be constructed before we go and open the settings dialog.
+
+    // FIXME: use another account-id at some point in future
+    //        we are now using the profile to avoid overwriting passwords of
+    //        other profiles in secure storage
+    QString profileName = QString::fromUtf8(qgetenv("TROJITA_PROFILE"));
+    m_imapAccess = new Imap::ImapAccess(this, m_settings, m_pluginManager, profileName);
+    connect(m_imapAccess, &Imap::ImapAccess::cacheError, this, &MainWindow::cacheError);
+    connect(m_imapAccess, &Imap::ImapAccess::checkSslPolicy, this, &MainWindow::checkSslPolicy, Qt::QueuedConnection);
+
+    ShortcutHandler *shortcutHandler = new ShortcutHandler(this);
+    shortcutHandler->setSettingsObject(m_settings);
+    defineActions();
+    shortcutHandler->readSettings(); // must happen after defineActions()
+
     createWidgets();
 
-    migrateSettings();
-    QSettings s;
+    Imap::migrateSettings(m_settings);
 
     m_senderIdentities = new Composer::SenderIdentitiesModel(this);
-    m_senderIdentities->loadFromSettings(s);
+    m_senderIdentities->loadFromSettings(*m_settings);
 
-    if (! s.contains(Common::SettingsNames::imapMethodKey)) {
+    if (! m_settings->contains(Common::SettingsNames::imapMethodKey)) {
         QTimer::singleShot(0, this, SLOT(slotShowSettings()));
     }
 
@@ -107,580 +163,902 @@ MainWindow::MainWindow(): QMainWindow(), model(0), m_actionSortNone(0), m_ignore
     setupModels();
     createActions();
     createMenus();
+    slotToggleSysTray();
+    slotPluginsChanged();
 
     // Please note that Qt 4.6.1 really requires passing the method signature this way, *not* using the SLOT() macro
-    QDesktopServices::setUrlHandler(QLatin1String("mailto"), this, "slotComposeMailUrl");
+    QDesktopServices::setUrlHandler(QStringLiteral("mailto"), this, "slotComposeMailUrl");
+    QDesktopServices::setUrlHandler(QStringLiteral("x-trojita-manage-contact"), this, "slotManageContact");
 
     slotUpdateWindowTitle();
+
+    recoverDrafts();
+
+    if (m_actionLayoutWide->isEnabled() &&
+            m_settings->value(Common::SettingsNames::guiMainWindowLayout) == Common::SettingsNames::guiMainWindowLayoutWide) {
+        m_actionLayoutWide->trigger();
+    } else if (m_settings->value(Common::SettingsNames::guiMainWindowLayout) == Common::SettingsNames::guiMainWindowLayoutOneAtTime) {
+        m_actionLayoutOneAtTime->trigger();
+    } else {
+        m_actionLayoutCompact->trigger();
+    }
+
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+            [&](Qt::ApplicationState state) {
+                if (state == Qt::ApplicationActive && m_networkErrorMessageBox && m_networkErrorMessageBox->property(netErrorUnseen).toBool()) {
+                    m_networkErrorMessageBox->setProperty(netErrorUnseen, false);
+                    m_networkErrorMessageBox->show();
+                }
+            });
+
+    // Don't listen to QDesktopWidget::resized; that is emitted too early (when it gets fired, the screen size has changed, but
+    // the workspace area is still the old one). Instead, listen to workAreaResized which gets emitted at an appropriate time.
+    // The delay is still there to guarantee some smoothing; on jkt's box there are typically three events in a rapid sequence
+    // (some of them most likely due to the fact that at first, the actual desktop gets resized, the plasma panel reacts
+    // to that and only after the panel gets resized, the available size of "the rest" is correct again).
+    // Which is why it makes sense to introduce some delay in there. The 0.5s delay is my best guess and "should work" (especially
+    // because every change bumps the timer anyway, as Thomas pointed out).
+    QTimer *delayedResize = new QTimer(this);
+    delayedResize->setSingleShot(true);
+    delayedResize->setInterval(500);
+    connect(delayedResize, &QTimer::timeout, this, &MainWindow::desktopGeometryChanged);
+    connect(qApp->desktop(), &QDesktopWidget::workAreaResized, delayedResize, static_cast<void (QTimer::*)()>(&QTimer::start));
+    m_skipSavingOfUI = false;
+}
+
+void MainWindow::defineActions()
+{
+    ShortcutHandler *shortcutHandler = ShortcutHandler::instance();
+    shortcutHandler->defineAction(QStringLiteral("action_application_exit"), QStringLiteral("application-exit"), tr("E&xit"), QKeySequence::Quit);
+    shortcutHandler->defineAction(QStringLiteral("action_compose_mail"), QStringLiteral("document-edit"), tr("&New Message..."), QKeySequence::New);
+    shortcutHandler->defineAction(QStringLiteral("action_compose_draft"), QStringLiteral("document-open-recent"), tr("&Edit Draft..."));
+    shortcutHandler->defineAction(QStringLiteral("action_show_menubar"), QStringLiteral("view-list-text"), tr("Show Main Menu &Bar"), tr("Ctrl+M"));
+    shortcutHandler->defineAction(QStringLiteral("action_expunge"), QStringLiteral("trash-empty"), tr("Exp&unge"), tr("Ctrl+E"));
+    shortcutHandler->defineAction(QStringLiteral("action_mark_as_read"), QStringLiteral("mail-mark-read"), tr("Mark as &Read"), QStringLiteral("M"));
+    shortcutHandler->defineAction(QStringLiteral("action_go_to_next_unread"), QStringLiteral("arrow-right"), tr("&Next Unread Message"), QStringLiteral("N"));
+    shortcutHandler->defineAction(QStringLiteral("action_go_to_previous_unread"), QStringLiteral("arrow-left"), tr("&Previous Unread Message"), QStringLiteral("P"));
+    shortcutHandler->defineAction(QStringLiteral("action_mark_as_deleted"), QStringLiteral("list-remove"), tr("Mark as &Deleted"), QKeySequence(Qt::Key_Delete).toString());
+    shortcutHandler->defineAction(QStringLiteral("action_mark_as_flagged"), QStringLiteral("mail-flagged"), tr("Mark as &Flagged"), QStringLiteral("S"));
+    shortcutHandler->defineAction(QStringLiteral("action_mark_as_junk"), QStringLiteral("mail-mark-junk"), tr("Mark as &Junk"), QStringLiteral("J"));
+    shortcutHandler->defineAction(QStringLiteral("action_mark_as_notjunk"), QStringLiteral("mail-mark-notjunk"), tr("Mark as Not &junk"), QStringLiteral("Shift+J"));
+    shortcutHandler->defineAction(QStringLiteral("action_save_message_as"), QStringLiteral("document-save"), tr("&Save Message..."));
+    shortcutHandler->defineAction(QStringLiteral("action_view_message_source"), QString(), tr("View Message &Source..."));
+    shortcutHandler->defineAction(QStringLiteral("action_view_message_headers"), QString(), tr("View Message &Headers..."), tr("Ctrl+U"));
+    shortcutHandler->defineAction(QStringLiteral("action_reply_private"), QStringLiteral("mail-reply-sender"), tr("&Private Reply"), tr("Ctrl+Shift+A"));
+    shortcutHandler->defineAction(QStringLiteral("action_reply_all_but_me"), QStringLiteral("mail-reply-all"), tr("Reply to All &but Me"), tr("Ctrl+Shift+R"));
+    shortcutHandler->defineAction(QStringLiteral("action_reply_all"), QStringLiteral("mail-reply-all"), tr("Reply to &All"), tr("Ctrl+Alt+Shift+R"));
+    shortcutHandler->defineAction(QStringLiteral("action_reply_list"), QStringLiteral("mail-reply-list"), tr("Reply to &Mailing List"), tr("Ctrl+L"));
+    shortcutHandler->defineAction(QStringLiteral("action_reply_guess"), QString(), tr("Reply by &Guess"), tr("Ctrl+R"));
+    shortcutHandler->defineAction(QStringLiteral("action_forward_attachment"), QStringLiteral("mail-forward"), tr("&Forward"), tr("Ctrl+Shift+F"));
+    shortcutHandler->defineAction(QStringLiteral("action_contact_editor"), QStringLiteral("contact-unknown"), tr("Address Book..."));
+    shortcutHandler->defineAction(QStringLiteral("action_network_offline"), QStringLiteral("network-disconnect"), tr("&Offline"));
+    shortcutHandler->defineAction(QStringLiteral("action_network_expensive"), QStringLiteral("network-wireless"), tr("&Expensive Connection"));
+    shortcutHandler->defineAction(QStringLiteral("action_network_online"), QStringLiteral("network-connect"), tr("&Free Access"));
+    shortcutHandler->defineAction(QStringLiteral("action_messagewindow_close"), QStringLiteral("window-close"), tr("Close Standalone Message Window"));
+    shortcutHandler->defineAction(QStringLiteral("action_oneattime_go_back"), QStringLiteral("go-previous"), tr("Navigate Back"), QKeySequence(QKeySequence::Back).toString());
+    shortcutHandler->defineAction(QStringLiteral("action_zoom_in"), QStringLiteral("zoom-in"), tr("Zoom In"), QKeySequence::ZoomIn);
+    shortcutHandler->defineAction(QStringLiteral("action_zoom_out"), QStringLiteral("zoom-out"), tr("Zoom Out"), QKeySequence::ZoomOut);
+    shortcutHandler->defineAction(QStringLiteral("action_zoom_original"), QStringLiteral("zoom-original"), tr("Original Size"));
 }
 
 void MainWindow::createActions()
 {
+    // The shortcuts are a little bit complicated, unfortunately. This is what the other applications use by default:
+    //
+    // Thunderbird:
+    // private: Ctrl+R
+    // all: Ctrl+Shift+R
+    // list: Ctrl+Shift+L
+    // forward: Ctrl+L
+    // (no shortcuts for type of forwarding)
+    // bounce: ctrl+B
+    // new message: Ctrl+N
+    //
+    // KMail:
+    // "reply": R
+    // private: Shift+A
+    // all: A
+    // list: L
+    // forward as attachment: F
+    // forward inline: Shift+F
+    // bounce: E
+    // new: Ctrl+N
+
+    m_actionContactEditor = ShortcutHandler::instance()->createAction(QStringLiteral("action_contact_editor"), this, SLOT(invokeContactEditor()), this);
+
     m_mainToolbar = addToolBar(tr("Navigation"));
+    m_mainToolbar->setObjectName(QStringLiteral("mainToolbar"));
 
-    reloadMboxList = new QAction(style()->standardIcon(QStyle::SP_ArrowRight), tr("Update List of Child Mailboxes"), this);
-    connect(reloadMboxList, SIGNAL(triggered()), this, SLOT(slotReloadMboxList()));
+    reloadMboxList = new QAction(style()->standardIcon(QStyle::SP_ArrowRight), tr("&Update List of Child Mailboxes"), this);
+    connect(reloadMboxList, &QAction::triggered, this, &MainWindow::slotReloadMboxList);
 
-    resyncMbox = new QAction(loadIcon(QLatin1String("view-refresh")), tr("Check for New Messages"), this);
-    connect(resyncMbox, SIGNAL(triggered()), this, SLOT(slotResyncMbox()));
+    resyncMbox = new QAction(UiUtils::loadIcon(QStringLiteral("view-refresh")), tr("Check for &New Messages"), this);
+    connect(resyncMbox, &QAction::triggered, this, &MainWindow::slotResyncMbox);
 
-    reloadAllMailboxes = new QAction(tr("Reload Everything"), this);
+    reloadAllMailboxes = new QAction(tr("&Reload Everything"), this);
     // connect later
 
-    exitAction = new QAction(loadIcon(QLatin1String("application-exit")), tr("E&xit"), this);
-    exitAction->setShortcut(tr("Ctrl+Q"));
+    exitAction = ShortcutHandler::instance()->createAction(QStringLiteral("action_application_exit"), qApp, SLOT(quit()), this);
     exitAction->setStatusTip(tr("Exit the application"));
-    connect(exitAction, SIGNAL(triggered()), this, SLOT(close()));
 
-    QActionGroup *netPolicyGroup = new QActionGroup(this);
-    netPolicyGroup->setExclusive(true);
-    netOffline = new QAction(loadIcon(QLatin1String("network-offline")), tr("Offline"), netPolicyGroup);
+    netOffline = ShortcutHandler::instance()->createAction(QStringLiteral("action_network_offline"));
     netOffline->setCheckable(true);
     // connect later
-    netExpensive = new QAction(loadIcon(QLatin1String("network-expensive")), tr("Expensive Connection"), netPolicyGroup);
+    netExpensive = ShortcutHandler::instance()->createAction(QStringLiteral("action_network_expensive"));
     netExpensive->setCheckable(true);
     // connect later
-    netOnline = new QAction(loadIcon(QLatin1String("network-online")), tr("Free Access"), netPolicyGroup);
+    netOnline = ShortcutHandler::instance()->createAction(QStringLiteral("action_network_online"));
     netOnline->setCheckable(true);
     // connect later
 
-    showFullView = new QAction(loadIcon(QLatin1String("edit-find-mail")), tr("Show Full Tree Window"), this);
+    QActionGroup *netPolicyGroup = new QActionGroup(this);
+    netPolicyGroup->setExclusive(true);
+    netPolicyGroup->addAction(netOffline);
+    netPolicyGroup->addAction(netExpensive);
+    netPolicyGroup->addAction(netOnline);
+
+    //: a debugging tool showing the full contents of the whole IMAP server; all folders, messages and their parts
+    showFullView = new QAction(UiUtils::loadIcon(QStringLiteral("edit-find-mail")), tr("Show Full &Tree Window"), this);
     showFullView->setCheckable(true);
-    connect(showFullView, SIGNAL(triggered(bool)), allDock, SLOT(setVisible(bool)));
-    connect(allDock, SIGNAL(visibilityChanged(bool)), showFullView, SLOT(setChecked(bool)));
+    connect(showFullView, &QAction::triggered, allDock, &QWidget::setVisible);
+    connect(allDock, &QDockWidget::visibilityChanged, showFullView, &QAction::setChecked);
 
-    showTaskView = new QAction(tr("Show ImapTask tree"), this);
+    //: list of active "tasks", entities which are performing certain action like downloading a message or syncing a mailbox
+    showTaskView = new QAction(tr("Show ImapTask t&ree"), this);
     showTaskView->setCheckable(true);
-    connect(showTaskView, SIGNAL(triggered(bool)), taskDock, SLOT(setVisible(bool)));
-    connect(taskDock, SIGNAL(visibilityChanged(bool)), showTaskView, SLOT(setChecked(bool)));
+    connect(showTaskView, &QAction::triggered, taskDock, &QWidget::setVisible);
+    connect(taskDock, &QDockWidget::visibilityChanged, showTaskView, &QAction::setChecked);
 
-    showImapLogger = new QAction(tr("Show IMAP protocol log"), this);
+    //: a debugging tool showing the mime tree of the current message
+    showMimeView = new QAction(tr("Show &MIME tree"), this);
+    showMimeView->setCheckable(true);
+    connect(showMimeView, &QAction::triggered, mailMimeDock, &QWidget::setVisible);
+    connect(mailMimeDock, &QDockWidget::visibilityChanged, showMimeView, &QAction::setChecked);
+
+    showImapLogger = new QAction(tr("Show IMAP protocol &log"), this);
     showImapLogger->setCheckable(true);
-    connect(showImapLogger, SIGNAL(toggled(bool)), imapLoggerDock, SLOT(setVisible(bool)));
-    connect(imapLoggerDock, SIGNAL(visibilityChanged(bool)), showImapLogger, SLOT(setChecked(bool)));
+    connect(showImapLogger, &QAction::toggled, imapLoggerDock, &QWidget::setVisible);
+    connect(imapLoggerDock, &QDockWidget::visibilityChanged, showImapLogger, &QAction::setChecked);
 
-    logPersistent = new QAction(tr("Log into %1").arg(Imap::Mailbox::persistentLogFileName()), this);
+    //: file to save the debug log into
+    logPersistent = new QAction(tr("Log &into %1").arg(Imap::Mailbox::persistentLogFileName()), this);
     logPersistent->setCheckable(true);
-    connect(logPersistent, SIGNAL(triggered(bool)), imapLogger, SLOT(slotSetPersistentLogging(bool)));
+    connect(logPersistent, &QAction::triggered, imapLogger, &ProtocolLoggerWidget::slotSetPersistentLogging);
+    connect(imapLogger, &ProtocolLoggerWidget::persistentLoggingChanged, logPersistent, &QAction::setChecked);
 
-    showImapCapabilities = new QAction(tr("IMAP Server Information..."), this);
-    connect(showImapCapabilities, SIGNAL(triggered()), this, SLOT(slotShowImapInfo()));
+    showImapCapabilities = new QAction(tr("IMAP Server In&formation..."), this);
+    connect(showImapCapabilities, &QAction::triggered, this, &MainWindow::slotShowImapInfo);
 
-    showMenuBar = new QAction(loadIcon(QLatin1String("view-list-text")),  tr("Show Main Menu Bar"), this);
+    showMenuBar = ShortcutHandler::instance()->createAction(QStringLiteral("action_show_menubar"), this);
     showMenuBar->setCheckable(true);
     showMenuBar->setChecked(true);
-    showMenuBar->setShortcut(tr("Ctrl+M"));
-    addAction(showMenuBar);   // otherwise it won't work with hidden menu bar
-    connect(showMenuBar, SIGNAL(triggered(bool)), menuBar(), SLOT(setVisible(bool)));
+    connect(showMenuBar, &QAction::triggered, menuBar(), &QMenuBar::setVisible);
+    connect(showMenuBar, &QAction::triggered, m_delayedStateSaving, static_cast<void (QTimer::*)()>(&QTimer::start));
 
-    showToolBar = new QAction(tr("Show Toolbar"), this);
+    showToolBar = new QAction(tr("Show &Toolbar"), this);
     showToolBar->setCheckable(true);
-    showToolBar->setChecked(true);
-    connect(showToolBar, SIGNAL(triggered(bool)), m_mainToolbar, SLOT(setVisible(bool)));
+    connect(showToolBar, &QAction::triggered, m_mainToolbar, &QWidget::setVisible);
+    connect(m_mainToolbar, &QToolBar::visibilityChanged, showToolBar, &QAction::setChecked);
+    connect(m_mainToolbar, &QToolBar::visibilityChanged, m_delayedStateSaving, static_cast<void (QTimer::*)()>(&QTimer::start));
 
-    configSettings = new QAction(loadIcon(QLatin1String("configure")),  tr("Settings..."), this);
-    connect(configSettings, SIGNAL(triggered()), this, SLOT(slotShowSettings()));
+    configSettings = new QAction(UiUtils::loadIcon(QStringLiteral("configure")),  tr("&Settings..."), this);
+    connect(configSettings, &QAction::triggered, this, &MainWindow::slotShowSettings);
 
-    composeMail = new QAction(loadIcon(QLatin1String("document-edit")),  tr("Compose Mail..."), this);
-    connect(composeMail, SIGNAL(triggered()), this, SLOT(slotComposeMail()));
+    QAction *triggerSearch = new QAction(this);
+    addAction(triggerSearch);
+    triggerSearch->setShortcut(QKeySequence(QStringLiteral(":, =")));
+    connect(triggerSearch, &QAction::triggered, msgListWidget, &MessageListWidget::focusRawSearch);
 
-    expunge = new QAction(loadIcon(QLatin1String("trash-empty")),  tr("Expunge Mailbox"), this);
-    expunge->setShortcut(tr("Ctrl+E"));
-    connect(expunge, SIGNAL(triggered()), this, SLOT(slotExpunge()));
+    triggerSearch = new QAction(this);
+    addAction(triggerSearch);
+    triggerSearch->setShortcut(QKeySequence(QStringLiteral("/")));
+    connect(triggerSearch, &QAction::triggered, msgListWidget, &MessageListWidget::focusSearch);
 
-    markAsRead = new QAction(loadIcon(QLatin1String("mail-mark-read")),  tr("Mark as Read"), this);
+    m_oneAtTimeGoBack = ShortcutHandler::instance()->createAction(QStringLiteral("action_oneattime_go_back"), this);
+    m_oneAtTimeGoBack->setEnabled(false);
+
+    composeMail = ShortcutHandler::instance()->createAction(QStringLiteral("action_compose_mail"), this, SLOT(slotComposeMail()), this);
+    m_editDraft = ShortcutHandler::instance()->createAction(QStringLiteral("action_compose_draft"), this, SLOT(slotEditDraft()), this);
+
+    expunge = ShortcutHandler::instance()->createAction(QStringLiteral("action_expunge"), this, SLOT(slotExpunge()), this);
+
+    m_forwardAsAttachment = ShortcutHandler::instance()->createAction(QStringLiteral("action_forward_attachment"), this, SLOT(slotForwardAsAttachment()), this);
+    markAsRead = ShortcutHandler::instance()->createAction(QStringLiteral("action_mark_as_read"), this);
     markAsRead->setCheckable(true);
-    markAsRead->setShortcut(Qt::Key_M);
     msgListWidget->tree->addAction(markAsRead);
-    connect(markAsRead, SIGNAL(triggered(bool)), this, SLOT(handleMarkAsRead(bool)));
+    connect(markAsRead, &QAction::triggered, this, &MainWindow::handleMarkAsRead);
 
-    m_nextMessage = new QAction(tr("Next Unread Message"), this);
-    m_nextMessage->setShortcut(Qt::Key_N);
+    m_nextMessage = ShortcutHandler::instance()->createAction(QStringLiteral("action_go_to_next_unread"), this, SLOT(slotNextUnread()), this);
     msgListWidget->tree->addAction(m_nextMessage);
-    msgView->addAction(m_nextMessage);
-    connect(m_nextMessage, SIGNAL(triggered()), this, SLOT(slotNextUnread()));
+    m_messageWidget->messageView->addAction(m_nextMessage);
 
-    m_previousMessage = new QAction(tr("Previous Unread Message"), this);
-    m_previousMessage->setShortcut(Qt::Key_P);
+    m_previousMessage = ShortcutHandler::instance()->createAction(QStringLiteral("action_go_to_previous_unread"), this, SLOT(slotPreviousUnread()), this);
     msgListWidget->tree->addAction(m_previousMessage);
-    msgView->addAction(m_previousMessage);
-    connect(m_previousMessage, SIGNAL(triggered()), this, SLOT(slotPreviousUnread()));
+    m_messageWidget->messageView->addAction(m_previousMessage);
 
-    markAsDeleted = new QAction(loadIcon(QLatin1String("list-remove")),  tr("Mark as Deleted"), this);
+    markAsDeleted = ShortcutHandler::instance()->createAction(QStringLiteral("action_mark_as_deleted"), this);
     markAsDeleted->setCheckable(true);
-    markAsDeleted->setShortcut(Qt::Key_Delete);
     msgListWidget->tree->addAction(markAsDeleted);
-    connect(markAsDeleted, SIGNAL(triggered(bool)), this, SLOT(handleMarkAsDeleted(bool)));
+    connect(markAsDeleted, &QAction::triggered, this, &MainWindow::handleMarkAsDeleted);
 
-    saveWholeMessage = new QAction(loadIcon(QLatin1String("file-save")), tr("Save Message..."), this);
+    markAsFlagged = ShortcutHandler::instance()->createAction(QStringLiteral("action_mark_as_flagged"), this);
+    markAsFlagged->setCheckable(true);
+    connect(markAsFlagged, &QAction::triggered, this, &MainWindow::handleMarkAsFlagged);
+
+    markAsJunk = ShortcutHandler::instance()->createAction(QStringLiteral("action_mark_as_junk"), this);
+    markAsJunk->setCheckable(true);
+    connect(markAsJunk, &QAction::triggered, this, &MainWindow::handleMarkAsJunk);
+
+    markAsNotJunk = ShortcutHandler::instance()->createAction(QStringLiteral("action_mark_as_notjunk"), this);
+    markAsNotJunk->setCheckable(true);
+    connect(markAsNotJunk, &QAction::triggered, this, &MainWindow::handleMarkAsNotJunk);
+
+    saveWholeMessage = ShortcutHandler::instance()->createAction(QStringLiteral("action_save_message_as"), this, SLOT(slotSaveCurrentMessageBody()), this);
     msgListWidget->tree->addAction(saveWholeMessage);
-    connect(saveWholeMessage, SIGNAL(triggered()), this, SLOT(slotSaveCurrentMessageBody()));
 
-    viewMsgHeaders = new QAction(tr("View Message Headers..."), this);
-    viewMsgHeaders->setShortcut(tr("Ctrl+U"));
+    viewMsgSource = ShortcutHandler::instance()->createAction(QStringLiteral("action_view_message_source"), this, SLOT(slotViewMsgSource()), this);
+    msgListWidget->tree->addAction(viewMsgSource);
+
+    viewMsgHeaders = ShortcutHandler::instance()->createAction(QStringLiteral("action_view_message_headers"), this, SLOT(slotViewMsgHeaders()), this);
     msgListWidget->tree->addAction(viewMsgHeaders);
-    connect(viewMsgHeaders, SIGNAL(triggered()), this, SLOT(slotViewMsgHeaders()));
 
-    createChildMailbox = new QAction(tr("Create Child Mailbox..."), this);
-    connect(createChildMailbox, SIGNAL(triggered()), this, SLOT(slotCreateMailboxBelowCurrent()));
+    //: "mailbox" as a "folder of messages", not as a "mail account"
+    createChildMailbox = new QAction(tr("Create &Child Mailbox..."), this);
+    connect(createChildMailbox, &QAction::triggered, this, &MainWindow::slotCreateMailboxBelowCurrent);
 
-    createTopMailbox = new QAction(tr("Create New Mailbox..."), this);
-    connect(createTopMailbox, SIGNAL(triggered()), this, SLOT(slotCreateTopMailbox()));
+    //: "mailbox" as a "folder of messages", not as a "mail account"
+    createTopMailbox = new QAction(tr("Create &New Mailbox..."), this);
+    connect(createTopMailbox, &QAction::triggered, this, &MainWindow::slotCreateTopMailbox);
 
-    deleteCurrentMailbox = new QAction(tr("Delete Mailbox"), this);
-    connect(deleteCurrentMailbox, SIGNAL(triggered()), this, SLOT(slotDeleteCurrentMailbox()));
+    m_actionMarkMailboxAsRead = new QAction(tr("&Mark Mailbox as Read"), this);
+    connect(m_actionMarkMailboxAsRead, &QAction::triggered, this, &MainWindow::slotMarkCurrentMailboxRead);
+
+    //: "mailbox" as a "folder of messages", not as a "mail account"
+    deleteCurrentMailbox = new QAction(tr("&Remove Mailbox"), this);
+    connect(deleteCurrentMailbox, &QAction::triggered, this, &MainWindow::slotDeleteCurrentMailbox);
 
 #ifdef XTUPLE_CONNECT
-    xtIncludeMailboxInSync = new QAction(tr("Synchronize with xTuple"), this);
+    xtIncludeMailboxInSync = new QAction(tr("&Synchronize with xTuple"), this);
     xtIncludeMailboxInSync->setCheckable(true);
     connect(xtIncludeMailboxInSync, SIGNAL(triggered()), this, SLOT(slotXtSyncCurrentMailbox()));
 #endif
 
-    // FIXME: add proper shortcuts
-    // this is complicated a bit because there shall typically be one shortcut to lead to the "default thing"...
-    m_replyPrivate = new QAction(tr("Private Reply"), this);
+    m_replyPrivate = ShortcutHandler::instance()->createAction(QStringLiteral("action_reply_private"), this, SLOT(slotReplyTo()), this);
     m_replyPrivate->setEnabled(false);
-    connect(m_replyPrivate, SIGNAL(triggered()), this, SLOT(slotReplyTo()));
 
-    m_replyAll = new QAction(tr("Reply to All"), this);
+    m_replyAllButMe = ShortcutHandler::instance()->createAction(QStringLiteral("action_reply_all_but_me"), this, SLOT(slotReplyAllButMe()), this);
+    m_replyAllButMe->setEnabled(false);
+
+    m_replyAll = ShortcutHandler::instance()->createAction(QStringLiteral("action_reply_all"), this, SLOT(slotReplyAll()), this);
     m_replyAll->setEnabled(false);
-    connect(m_replyAll, SIGNAL(triggered()), this, SLOT(slotReplyAll()));
 
-    m_replyList = new QAction(tr("Reply to Mailing List"), this);
+    m_replyList = ShortcutHandler::instance()->createAction(QStringLiteral("action_reply_list"), this, SLOT(slotReplyList()), this);
     m_replyList->setEnabled(false);
-    connect(m_replyList, SIGNAL(triggered()), this, SLOT(slotReplyList()));
 
-    actionThreadMsgList = new QAction(tr("Show Messages in Threads"), this);
+    m_replyGuess = ShortcutHandler::instance()->createAction(QStringLiteral("action_reply_guess"), this, SLOT(slotReplyGuess()), this);
+    m_replyGuess->setEnabled(true);
+
+    actionThreadMsgList = new QAction(UiUtils::loadIcon(QStringLiteral("format-justify-right")), tr("Show Messages in &Threads"), this);
     actionThreadMsgList->setCheckable(true);
     // This action is enabled/disabled by model's capabilities
     actionThreadMsgList->setEnabled(false);
-    if (QSettings().value(Common::SettingsNames::guiMsgListShowThreading).toBool()) {
+    if (m_settings->value(Common::SettingsNames::guiMsgListShowThreading).toBool()) {
         actionThreadMsgList->setChecked(true);
         // The actual threading will be performed only when model updates its capabilities
     }
-    connect(actionThreadMsgList, SIGNAL(triggered(bool)), this, SLOT(slotThreadMsgList()));
+    connect(actionThreadMsgList, &QAction::triggered, this, &MainWindow::slotThreadMsgList);
 
     QActionGroup *sortOrderGroup = new QActionGroup(this);
-    m_actionSortAscending = new QAction(tr("Ascending"), sortOrderGroup);
+    m_actionSortAscending = new QAction(tr("&Ascending"), sortOrderGroup);
     m_actionSortAscending->setCheckable(true);
     m_actionSortAscending->setChecked(true);
-    m_actionSortDescending = new QAction(tr("Descending"), sortOrderGroup);
+    m_actionSortDescending = new QAction(tr("&Descending"), sortOrderGroup);
     m_actionSortDescending->setCheckable(true);
-    connect(sortOrderGroup, SIGNAL(triggered(QAction*)), this, SLOT(slotSortingPreferenceChanged()));
+    // QActionGroup has no toggle signal, but connecting descending will implicitly catch the acscending complement ;-)
+    connect(m_actionSortDescending, &QAction::toggled, m_delayedStateSaving, static_cast<void (QTimer::*)()>(&QTimer::start));
+    connect(m_actionSortDescending, &QAction::toggled, this, &MainWindow::slotScrollToCurrent);
+    connect(sortOrderGroup, &QActionGroup::triggered, this, &MainWindow::slotSortingPreferenceChanged);
 
     QActionGroup *sortColumnGroup = new QActionGroup(this);
-    m_actionSortNone = new QAction(tr("No sorting"), sortColumnGroup);
+    m_actionSortNone = new QAction(tr("&No sorting"), sortColumnGroup);
     m_actionSortNone->setCheckable(true);
-    m_actionSortThreading = new QAction(tr("Sorted by Threading"), sortColumnGroup);
+    m_actionSortThreading = new QAction(tr("Sorted by &Threading"), sortColumnGroup);
     m_actionSortThreading->setCheckable(true);
-    m_actionSortByArrival = new QAction(tr("Arrival"), sortColumnGroup);
+    m_actionSortByArrival = new QAction(tr("A&rrival"), sortColumnGroup);
     m_actionSortByArrival->setCheckable(true);
-    m_actionSortByCc = new QAction(tr("Cc (Carbon Copy)"), sortColumnGroup);
+    m_actionSortByCc = new QAction(tr("&Cc (Carbon Copy)"), sortColumnGroup);
     m_actionSortByCc->setCheckable(true);
-    m_actionSortByDate = new QAction(tr("Date from Message Headers"), sortColumnGroup);
+    m_actionSortByDate = new QAction(tr("Date from &Message Headers"), sortColumnGroup);
     m_actionSortByDate->setCheckable(true);
-    m_actionSortByFrom = new QAction(tr("From Address"), sortColumnGroup);
+    m_actionSortByFrom = new QAction(tr("&From Address"), sortColumnGroup);
     m_actionSortByFrom->setCheckable(true);
-    m_actionSortBySize = new QAction(tr("Size"), sortColumnGroup);
+    m_actionSortBySize = new QAction(tr("&Size"), sortColumnGroup);
     m_actionSortBySize->setCheckable(true);
-    m_actionSortBySubject = new QAction(tr("Subject"), sortColumnGroup);
+    m_actionSortBySubject = new QAction(tr("S&ubject"), sortColumnGroup);
     m_actionSortBySubject->setCheckable(true);
-    m_actionSortByTo = new QAction(tr("To Address"), sortColumnGroup);
+    m_actionSortByTo = new QAction(tr("T&o Address"), sortColumnGroup);
     m_actionSortByTo->setCheckable(true);
-    connect(sortColumnGroup, SIGNAL(triggered(QAction*)), this, SLOT(slotSortingPreferenceChanged()));
+    connect(sortColumnGroup, &QActionGroup::triggered, this, &MainWindow::slotSortingPreferenceChanged);
     slotSortingConfirmed(-1, Qt::AscendingOrder);
 
-    actionHideRead = new QAction(tr("Hide Read Messages"), this);
+    actionHideRead = new QAction(tr("&Hide Read Messages"), this);
     actionHideRead->setCheckable(true);
-    addAction(actionHideRead);
-    if (QSettings().value(Common::SettingsNames::guiMsgListHideRead).toBool()) {
+    if (m_settings->value(Common::SettingsNames::guiMsgListHideRead).toBool()) {
         actionHideRead->setChecked(true);
         prettyMsgListModel->setHideRead(true);
     }
-    connect(actionHideRead, SIGNAL(triggered(bool)), this, SLOT(slotHideRead()));
+    connect(actionHideRead, &QAction::triggered, this, &MainWindow::slotHideRead);
 
     QActionGroup *layoutGroup = new QActionGroup(this);
-    m_actionLayoutCompact = new QAction(tr("Compact"), layoutGroup);
+    m_actionLayoutCompact = new QAction(tr("&Compact"), layoutGroup);
     m_actionLayoutCompact->setCheckable(true);
     m_actionLayoutCompact->setChecked(true);
-    connect(m_actionLayoutCompact, SIGNAL(triggered()), this, SLOT(slotLayoutCompact()));
-    m_actionLayoutWide = new QAction(tr("Wide"), layoutGroup);
+    connect(m_actionLayoutCompact, &QAction::triggered, this, &MainWindow::slotLayoutCompact);
+    m_actionLayoutWide = new QAction(tr("&Wide"), layoutGroup);
     m_actionLayoutWide->setCheckable(true);
-    connect(m_actionLayoutWide, SIGNAL(triggered()), this, SLOT(slotLayoutWide()));
+    connect(m_actionLayoutWide, &QAction::triggered, this, &MainWindow::slotLayoutWide);
+    m_actionLayoutOneAtTime = new QAction(tr("&One At Time"), layoutGroup);
+    m_actionLayoutOneAtTime->setCheckable(true);
+    connect(m_actionLayoutOneAtTime, &QAction::triggered, this, &MainWindow::slotLayoutOneAtTime);
 
-    if (QSettings().value(Common::SettingsNames::guiMainWindowLayout) == Common::SettingsNames::guiMainWindowLayoutWide) {
-        m_actionLayoutWide->setChecked(true);
-        slotLayoutWide();
-    }
 
-    m_actionShowOnlySubscribed = new QAction(tr("Show Only Subscribed Folders"), this);
+    m_actionShowOnlySubscribed = new QAction(tr("Show Only S&ubscribed Folders"), this);
     m_actionShowOnlySubscribed->setCheckable(true);
     m_actionShowOnlySubscribed->setEnabled(false);
-    connect(m_actionShowOnlySubscribed, SIGNAL(toggled(bool)), this, SLOT(slotShowOnlySubscribed()));
-    m_actionSubscribeMailbox = new QAction(tr("Subscribed"), this);
+    connect(m_actionShowOnlySubscribed, &QAction::toggled, this, &MainWindow::slotShowOnlySubscribed);
+    m_actionSubscribeMailbox = new QAction(tr("Su&bscribed"), this);
     m_actionSubscribeMailbox->setCheckable(true);
     m_actionSubscribeMailbox->setEnabled(false);
-    connect(m_actionSubscribeMailbox, SIGNAL(triggered()), this, SLOT(slotSubscribeCurrentMailbox()));
+    connect(m_actionSubscribeMailbox, &QAction::triggered, this, &MainWindow::slotSubscribeCurrentMailbox);
 
-    aboutTrojita = new QAction(trUtf8("About Trojitá..."), this);
-    connect(aboutTrojita, SIGNAL(triggered()), this, SLOT(slotShowAboutTrojita()));
+    aboutTrojita = new QAction(trUtf8("&About Trojitá..."), this);
+    connect(aboutTrojita, &QAction::triggered, this, &MainWindow::slotShowAboutTrojita);
 
-    donateToTrojita = new QAction(tr("Donate to the project"), this);
-    connect(donateToTrojita, SIGNAL(triggered()), this, SLOT(slotDonateToTrojita()));
+    donateToTrojita = new QAction(tr("&Donate to the project"), this);
+    connect(donateToTrojita, &QAction::triggered, this, &MainWindow::slotDonateToTrojita);
 
     connectModelActions();
+
+    m_composeMenu = new QMenu(tr("Compose Mail"), this);
+    m_composeMenu->addAction(composeMail);
+    m_composeMenu->addAction(m_editDraft);
+    m_composeButton = new QToolButton(this);
+    m_composeButton->setPopupMode(QToolButton::MenuButtonPopup);
+    m_composeButton->setMenu(m_composeMenu);
+    m_composeButton->setDefaultAction(composeMail);
 
     m_replyButton = new QToolButton(this);
     m_replyButton->setPopupMode(QToolButton::MenuButtonPopup);
     m_replyMenu = new QMenu(m_replyButton);
     m_replyMenu->addAction(m_replyPrivate);
+    m_replyMenu->addAction(m_replyAllButMe);
     m_replyMenu->addAction(m_replyAll);
     m_replyMenu->addAction(m_replyList);
     m_replyButton->setMenu(m_replyMenu);
     m_replyButton->setDefaultAction(m_replyPrivate);
 
-    m_mainToolbar->addAction(composeMail);
+    m_mainToolbar->addWidget(m_composeButton);
     m_mainToolbar->addWidget(m_replyButton);
+    m_mainToolbar->addAction(m_forwardAsAttachment);
     m_mainToolbar->addAction(expunge);
     m_mainToolbar->addSeparator();
     m_mainToolbar->addAction(markAsRead);
     m_mainToolbar->addAction(markAsDeleted);
+    m_mainToolbar->addAction(markAsFlagged);
+    m_mainToolbar->addAction(markAsJunk);
+    m_mainToolbar->addAction(markAsNotJunk);
+
+    // Push the status indicators all the way to the other side of the toolbar -- either to the far right, or far bottom.
+    QWidget *toolbarSpacer = new QWidget(m_mainToolbar);
+    toolbarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_mainToolbar->addWidget(toolbarSpacer);
+
     m_mainToolbar->addSeparator();
-    m_mainToolbar->addAction(showMenuBar);
-    m_mainToolbar->addAction(configSettings);
+    m_mainToolbar->addWidget(busyParsersIndicator);
+
+    networkIndicator = new QToolButton(this);
+    // This is deliberate; we want to show this button in the same style as the other ones in the toolbar
+    networkIndicator->setPopupMode(QToolButton::MenuButtonPopup);
+    m_mainToolbar->addWidget(networkIndicator);
+
+    m_menuFromToolBar = new QToolButton(this);
+    m_menuFromToolBar->setIcon(UiUtils::loadIcon(QStringLiteral("menu_new")));
+    m_menuFromToolBar->setText(QChar(0x205d)); // Unicode 'TRICOLON'
+    m_menuFromToolBar->setPopupMode(QToolButton::MenuButtonPopup);
+    connect(m_menuFromToolBar, &QAbstractButton::clicked, m_menuFromToolBar, &QToolButton::showMenu);
+    m_mainToolbar->addWidget(m_menuFromToolBar);
+    connect(showMenuBar, &QAction::toggled, [this](const bool menuBarVisible) {
+        // https://bugreports.qt.io/browse/QTBUG-35768 , we have to work on the QAction, not QToolButton
+        m_mainToolbar->actions().last()->setVisible(!menuBarVisible);
+    });
+    m_mainToolbar->actions().last()->setVisible(false); // initial state to complement the default of the QMenuBar's visibility
+
+    busyParsersIndicator->setFixedSize(m_mainToolbar->iconSize());
+
+    {
+        // Custom widgets which are added into a QToolBar are by default aligned to the left, while QActions are justified.
+        // That sucks, because some of our widgets use multiple actions with an expanding arrow at right.
+        // Make sure everything is aligned to the left, so that the actual buttons are aligned properly and the extra arrows
+        // are, well, at right.
+        // I have no idea how this works on RTL layouts.
+        QLayout *lay = m_mainToolbar->layout();
+        for (int i = 0; i < lay->count(); ++i) {
+            QLayoutItem *it = lay->itemAt(i);
+            if (it->widget() == toolbarSpacer) {
+                // Don't align this one, otherwise it won't push stuff when in horizontal direction
+                continue;
+            }
+            if (it->widget() == busyParsersIndicator) {
+                // It looks much better when centered
+                it->setAlignment(Qt::AlignJustify);
+                continue;
+            }
+            it->setAlignment(Qt::AlignLeft);
+        }
+    }
+
+    updateMessageFlags();
 }
 
 void MainWindow::connectModelActions()
 {
-    connect(reloadAllMailboxes, SIGNAL(triggered()), model, SLOT(reloadMailboxList()));
-    connect(netOffline, SIGNAL(triggered()), model, SLOT(setNetworkOffline()));
-    connect(netExpensive, SIGNAL(triggered()), model, SLOT(setNetworkExpensive()));
-    connect(netOnline, SIGNAL(triggered()), model, SLOT(setNetworkOnline()));
+    connect(reloadAllMailboxes, &QAction::triggered, imapModel(), &Imap::Mailbox::Model::reloadMailboxList);
+    connect(netOffline, &QAction::triggered,
+            qobject_cast<Imap::Mailbox::NetworkWatcher*>(m_imapAccess->networkWatcher()), &Imap::Mailbox::NetworkWatcher::setNetworkOffline);
+    connect(netExpensive, &QAction::triggered,
+            qobject_cast<Imap::Mailbox::NetworkWatcher*>(m_imapAccess->networkWatcher()), &Imap::Mailbox::NetworkWatcher::setNetworkExpensive);
+    connect(netOnline, &QAction::triggered,
+            qobject_cast<Imap::Mailbox::NetworkWatcher*>(m_imapAccess->networkWatcher()), &Imap::Mailbox::NetworkWatcher::setNetworkOnline);
+    netExpensive->setEnabled(imapAccess()->isConfigured());
+    netOnline->setEnabled(imapAccess()->isConfigured());
 }
 
 void MainWindow::createMenus()
 {
-    QMenu *imapMenu = menuBar()->addMenu(tr("IMAP"));
-    imapMenu->addAction(composeMail);
-    imapMenu->addAction(m_replyPrivate);
-    imapMenu->addAction(m_replyAll);
-    imapMenu->addAction(m_replyList);
-    imapMenu->addAction(expunge);
+#define ADD_ACTION(MENU, ACTION) \
+    MENU->addAction(ACTION); \
+    addAction(ACTION);
+
+    QMenu *imapMenu = menuBar()->addMenu(tr("&IMAP"));
+    imapMenu->addMenu(m_composeMenu);
+    ADD_ACTION(imapMenu, m_actionContactEditor);
+    ADD_ACTION(imapMenu, m_replyGuess);
+    ADD_ACTION(imapMenu, m_replyPrivate);
+    ADD_ACTION(imapMenu, m_replyAll);
+    ADD_ACTION(imapMenu, m_replyAllButMe);
+    ADD_ACTION(imapMenu, m_replyList);
+    imapMenu->addSeparator();
+    ADD_ACTION(imapMenu, m_forwardAsAttachment);
+    imapMenu->addSeparator();
+    ADD_ACTION(imapMenu, expunge);
     imapMenu->addSeparator()->setText(tr("Network Access"));
-    QMenu *netPolicyMenu = imapMenu->addMenu(tr("Network Access"));
-    netPolicyMenu->addAction(netOffline);
-    netPolicyMenu->addAction(netExpensive);
-    netPolicyMenu->addAction(netOnline);
-    QMenu *debugMenu = imapMenu->addMenu(tr("Debugging"));
-    debugMenu->addAction(showFullView);
-    debugMenu->addAction(showTaskView);
-    debugMenu->addAction(showImapLogger);
-    debugMenu->addAction(logPersistent);
-    debugMenu->addAction(showImapCapabilities);
+    QMenu *netPolicyMenu = imapMenu->addMenu(tr("&Network Access"));
+    ADD_ACTION(netPolicyMenu, netOffline);
+    ADD_ACTION(netPolicyMenu, netExpensive);
+    ADD_ACTION(netPolicyMenu, netOnline);
+    QMenu *debugMenu = imapMenu->addMenu(tr("&Debugging"));
+    ADD_ACTION(debugMenu, showFullView);
+    ADD_ACTION(debugMenu, showTaskView);
+    ADD_ACTION(debugMenu, showMimeView);
+    ADD_ACTION(debugMenu, showImapLogger);
+    ADD_ACTION(debugMenu, logPersistent);
+    ADD_ACTION(debugMenu, showImapCapabilities);
     imapMenu->addSeparator();
-    imapMenu->addAction(configSettings);
+    ADD_ACTION(imapMenu, configSettings);
+    ADD_ACTION(imapMenu, ShortcutHandler::instance()->shortcutConfigAction());
     imapMenu->addSeparator();
-    imapMenu->addAction(exitAction);
+    ADD_ACTION(imapMenu, exitAction);
 
-    QMenu *viewMenu = menuBar()->addMenu(tr("View"));
-    viewMenu->addAction(showMenuBar);
-    viewMenu->addAction(showToolBar);
-    QMenu *layoutMenu = viewMenu->addMenu(tr("Layout"));
-    layoutMenu->addAction(m_actionLayoutCompact);
-    layoutMenu->addAction(m_actionLayoutWide);
+    QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
+    ADD_ACTION(viewMenu, showMenuBar);
+    ADD_ACTION(viewMenu, showToolBar);
+    QMenu *layoutMenu = viewMenu->addMenu(tr("&Layout"));
+    ADD_ACTION(layoutMenu, m_actionLayoutCompact);
+    ADD_ACTION(layoutMenu, m_actionLayoutWide);
+    ADD_ACTION(layoutMenu, m_actionLayoutOneAtTime);
     viewMenu->addSeparator();
-    viewMenu->addAction(m_previousMessage);
-    viewMenu->addAction(m_nextMessage);
+    ADD_ACTION(viewMenu, m_previousMessage);
+    ADD_ACTION(viewMenu, m_nextMessage);
     viewMenu->addSeparator();
-    QMenu *sortMenu = viewMenu->addMenu(tr("Sorting"));
-    sortMenu->addAction(m_actionSortNone);
-    sortMenu->addAction(m_actionSortThreading);
-    sortMenu->addAction(m_actionSortByArrival);
-    sortMenu->addAction(m_actionSortByCc);
-    sortMenu->addAction(m_actionSortByDate);
-    sortMenu->addAction(m_actionSortByFrom);
-    sortMenu->addAction(m_actionSortBySize);
-    sortMenu->addAction(m_actionSortBySubject);
-    sortMenu->addAction(m_actionSortByTo);
+    QMenu *sortMenu = viewMenu->addMenu(tr("S&orting"));
+    ADD_ACTION(sortMenu, m_actionSortNone);
+    ADD_ACTION(sortMenu, m_actionSortThreading);
+    ADD_ACTION(sortMenu, m_actionSortByArrival);
+    ADD_ACTION(sortMenu, m_actionSortByCc);
+    ADD_ACTION(sortMenu, m_actionSortByDate);
+    ADD_ACTION(sortMenu, m_actionSortByFrom);
+    ADD_ACTION(sortMenu, m_actionSortBySize);
+    ADD_ACTION(sortMenu, m_actionSortBySubject);
+    ADD_ACTION(sortMenu, m_actionSortByTo);
     sortMenu->addSeparator();
-    sortMenu->addAction(m_actionSortAscending);
-    sortMenu->addAction(m_actionSortDescending);
+    ADD_ACTION(sortMenu, m_actionSortAscending);
+    ADD_ACTION(sortMenu, m_actionSortDescending);
 
-    viewMenu->addAction(actionThreadMsgList);
-    viewMenu->addAction(actionHideRead);
-    viewMenu->addAction(m_actionShowOnlySubscribed);
+    ADD_ACTION(viewMenu, actionThreadMsgList);
+    ADD_ACTION(viewMenu, actionHideRead);
+    ADD_ACTION(viewMenu, m_actionShowOnlySubscribed);
 
-    QMenu *mailboxMenu = menuBar()->addMenu(tr("Mailbox"));
-    mailboxMenu->addAction(resyncMbox);
+    QMenu *mailboxMenu = menuBar()->addMenu(tr("&Mailbox"));
+    ADD_ACTION(mailboxMenu, resyncMbox);
     mailboxMenu->addSeparator();
-    mailboxMenu->addAction(reloadAllMailboxes);
+    ADD_ACTION(mailboxMenu, reloadAllMailboxes);
 
-    QMenu *helpMenu = menuBar()->addMenu(tr("Help"));
-    helpMenu->addAction(donateToTrojita);
+    QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
+    ADD_ACTION(helpMenu, donateToTrojita);
     helpMenu->addSeparator();
-    helpMenu->addAction(aboutTrojita);
+    ADD_ACTION(helpMenu, aboutTrojita);
+
+    QMenu *mainMenuBehindToolBar = new QMenu(this);
+    m_menuFromToolBar->setMenu(mainMenuBehindToolBar);
+    m_menuFromToolBar->menu()->addMenu(imapMenu);
+    m_menuFromToolBar->menu()->addMenu(viewMenu);
+    m_menuFromToolBar->menu()->addMenu(mailboxMenu);
+    m_menuFromToolBar->menu()->addMenu(helpMenu);
+    m_menuFromToolBar->menu()->addSeparator();
+    m_menuFromToolBar->menu()->addAction(showMenuBar);
 
     networkIndicator->setMenu(netPolicyMenu);
-    networkIndicator->setDefaultAction(netOnline);
+    m_netToolbarDefaultAction = new QAction(this);
+    networkIndicator->setDefaultAction(m_netToolbarDefaultAction);
+    connect(m_netToolbarDefaultAction, &QAction::triggered, networkIndicator, &QToolButton::showMenu);
+    connect(netOffline, &QAction::toggled, this, &MainWindow::updateNetworkIndication);
+    connect(netExpensive, &QAction::toggled, this, &MainWindow::updateNetworkIndication);
+    connect(netOnline, &QAction::toggled, this, &MainWindow::updateNetworkIndication);
+
+#undef ADD_ACTION
 }
 
 void MainWindow::createWidgets()
 {
+    // The state of the GUI is only saved after a certain time has passed. This is just an optimization to make sure
+    // we do not hit the disk continually when e.g. resizing some random widget.
+    m_delayedStateSaving = new QTimer(this);
+    m_delayedStateSaving->setInterval(1000);
+    m_delayedStateSaving->setSingleShot(true);
+    connect(m_delayedStateSaving, &QTimer::timeout, this, &MainWindow::saveSizesAndState);
+
     mboxTree = new MailBoxTreeView();
-    connect(mboxTree, SIGNAL(customContextMenuRequested(const QPoint &)),
-            this, SLOT(showContextMenuMboxTree(const QPoint &)));
+    mboxTree->setDesiredExpansion(m_settings->value(Common::SettingsNames::guiExpandedMailboxes).toStringList());
+    connect(mboxTree, &QWidget::customContextMenuRequested, this, &MainWindow::showContextMenuMboxTree);
+    connect(mboxTree, &MailBoxTreeView::mailboxExpansionChanged, this, [this](const QStringList &mailboxNames) {
+        m_settings->setValue(Common::SettingsNames::guiExpandedMailboxes, mailboxNames);
+    });
 
     msgListWidget = new MessageListWidget();
     msgListWidget->tree->setContextMenuPolicy(Qt::CustomContextMenu);
     msgListWidget->tree->setAlternatingRowColors(true);
+    msgListWidget->setRawSearchEnabled(m_settings->value(Common::SettingsNames::guiAllowRawSearch).toBool());
+    connect (msgListWidget, &MessageListWidget::rawSearchSettingChanged, this, &MainWindow::saveRawStateSetting);
 
-    connect(msgListWidget->tree, SIGNAL(customContextMenuRequested(const QPoint &)),
-            this, SLOT(showContextMenuMsgListTree(const QPoint &)));
-    connect(msgListWidget->tree, SIGNAL(activated(const QModelIndex &)), this, SLOT(msgListActivated(const QModelIndex &)));
-    connect(msgListWidget->tree, SIGNAL(clicked(const QModelIndex &)), this, SLOT(msgListClicked(const QModelIndex &)));
-    connect(msgListWidget->tree, SIGNAL(doubleClicked(const QModelIndex &)), this, SLOT(msgListDoubleClicked(const QModelIndex &)));
-    connect(msgListWidget, SIGNAL(requestingSearch(QStringList)), this, SLOT(slotSearchRequested(QStringList)));
+    connect(msgListWidget->tree, &QWidget::customContextMenuRequested, this, &MainWindow::showContextMenuMsgListTree);
+    connect(msgListWidget->tree, &QAbstractItemView::activated, this, &MainWindow::msgListClicked);
+    connect(msgListWidget->tree, &QAbstractItemView::clicked, this, &MainWindow::msgListClicked);
+    connect(msgListWidget->tree, &QAbstractItemView::doubleClicked, this, &MainWindow::msgListDoubleClicked);
+    connect(msgListWidget, &MessageListWidget::requestingSearch, this, &MainWindow::slotSearchRequested);
+    connect(msgListWidget->tree->header(), &QHeaderView::sectionMoved, m_delayedStateSaving, static_cast<void (QTimer::*)()>(&QTimer::start));
+    connect(msgListWidget->tree->header(), &QHeaderView::sectionResized, m_delayedStateSaving, static_cast<void (QTimer::*)()>(&QTimer::start));
 
-    msgView = new MessageView();
-    area = new QScrollArea();
-    area->setWidget(msgView);
-    area->setWidgetResizable(true);
-    connect(msgView, SIGNAL(messageChanged()), this, SLOT(scrollMessageUp()));
-    connect(msgView, SIGNAL(messageChanged()), this, SLOT(slotUpdateMessageActions()));
-    connect(msgView, SIGNAL(linkHovered(QString)), this, SLOT(slotShowLinkTarget(QString)));
-    if (QSettings().value(Common::SettingsNames::appLoadHomepage, QVariant(true)).toBool() &&
-        !QSettings().value(Common::SettingsNames::imapStartOffline).toBool()) {
-        msgView->setHomepageUrl(QUrl(QString::fromUtf8("http://welcome.trojita.flaska.net/%1").arg(QCoreApplication::applicationVersion())));
+    msgListWidget->tree->installEventFilter(this);
+
+    m_messageWidget = new CompleteMessageWidget(this, m_settings, m_pluginManager);
+    connect(m_messageWidget->messageView, &MessageView::messageChanged, this, &MainWindow::scrollMessageUp);
+    connect(m_messageWidget->messageView, &MessageView::messageChanged, this, &MainWindow::slotUpdateMessageActions);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 4, 0)
+    connect(m_messageWidget->messageView, &MessageView::linkHovered, [](const QString &url) {
+        if (url.isEmpty()) {
+            QToolTip::hideText();
+        } else {
+            // indirection due to https://bugs.kde.org/show_bug.cgi?id=363783
+            QTimer::singleShot(250, [url]() {
+                QToolTip::showText(QCursor::pos(), QObject::tr("Link target: %1").arg(UiUtils::Formatting::htmlEscaped(url)));
+            });
+        }
+    });
+#endif
+    connect(m_messageWidget->messageView, &MessageView::transferError, this, &MainWindow::slotDownloadTransferError);
+    // Do not try to get onto the homepage when we are on EXPENSIVE connection
+    if (m_settings->value(Common::SettingsNames::appLoadHomepage, QVariant(true)).toBool() &&
+        m_imapAccess->preferredNetworkPolicy() == Imap::Mailbox::NETWORK_ONLINE) {
+        m_messageWidget->messageView->setHomepageUrl(QUrl(QStringLiteral("http://welcome.trojita.flaska.net/%1").arg(Common::Application::version)));
     }
 
-    m_mainHSplitter = new QSplitter();
-    m_mainVSplitter = new QSplitter();
-    m_mainVSplitter->setOrientation(Qt::Vertical);
-    m_mainVSplitter->addWidget(msgListWidget);
-    m_mainVSplitter->addWidget(area);
-    m_mainHSplitter->addWidget(mboxTree);
-    m_mainHSplitter->addWidget(m_mainVSplitter);
-
-    // The mboxTree shall not expand...
-    m_mainHSplitter->setStretchFactor(0, 0);
-    // ...while the msgListTree shall consume all the remaining space
-    m_mainHSplitter->setStretchFactor(1, 1);
-
-    setCentralWidget(m_mainHSplitter);
-
-    allDock = new QDockWidget("Everything", this);
+    allDock = new QDockWidget(tr("Everything"), this);
+    allDock->setObjectName(QStringLiteral("allDock"));
     allTree = new QTreeView(allDock);
     allDock->hide();
     allTree->setUniformRowHeights(true);
     allTree->setHeaderHidden(true);
     allDock->setWidget(allTree);
     addDockWidget(Qt::LeftDockWidgetArea, allDock);
-    taskDock = new QDockWidget("IMAP Tasks", this);
+    taskDock = new QDockWidget(tr("IMAP Tasks"), this);
+    taskDock->setObjectName(QStringLiteral("taskDock"));
     taskTree = new QTreeView(taskDock);
     taskDock->hide();
     taskTree->setHeaderHidden(true);
     taskDock->setWidget(taskTree);
     addDockWidget(Qt::LeftDockWidgetArea, taskDock);
+    mailMimeDock = new QDockWidget(tr("MIME Tree"), this);
+    mailMimeDock->setObjectName(QStringLiteral("mailMimeDock"));
+    mailMimeTree = new QTreeView(mailMimeDock);
+    mailMimeDock->hide();
+    mailMimeTree->setUniformRowHeights(true);
+    mailMimeTree->setHeaderHidden(true);
+    mailMimeDock->setWidget(mailMimeTree);
+    addDockWidget(Qt::RightDockWidgetArea, mailMimeDock);
+    connect(m_messageWidget->messageView, &MessageView::messageModelChanged, this, &MainWindow::slotMessageModelChanged);
 
     imapLoggerDock = new QDockWidget(tr("IMAP Protocol"), this);
+    imapLoggerDock->setObjectName(QStringLiteral("imapLoggerDock"));
     imapLogger = new ProtocolLoggerWidget(imapLoggerDock);
     imapLoggerDock->hide();
     imapLoggerDock->setWidget(imapLogger);
     addDockWidget(Qt::BottomDockWidgetArea, imapLoggerDock);
 
     busyParsersIndicator = new TaskProgressIndicator(this);
-    statusBar()->addPermanentWidget(busyParsersIndicator);
-    busyParsersIndicator->hide();
-
-    networkIndicator = new QToolButton(this);
-    networkIndicator->setPopupMode(QToolButton::InstantPopup);
-    statusBar()->addPermanentWidget(networkIndicator);
 }
 
 void MainWindow::setupModels()
 {
-    Imap::Mailbox::SocketFactoryPtr factory;
-    Imap::Mailbox::TaskFactoryPtr taskFactory(new Imap::Mailbox::TaskFactory());
-    QSettings s;
+    m_imapAccess->reloadConfiguration();
+    m_imapAccess->doConnect();
 
-    using Common::SettingsNames;
-    if (s.value(SettingsNames::imapMethodKey).toString() == SettingsNames::methodTCP) {
-        factory.reset(new Imap::Mailbox::TlsAbleSocketFactory(
-                          s.value(SettingsNames::imapHostKey).toString(),
-                          s.value(SettingsNames::imapPortKey, QString::number(Common::PORT_IMAP)).toUInt()));
-        factory->setStartTlsRequired(s.value(SettingsNames::imapStartTlsKey, true).toBool());
-    } else if (s.value(SettingsNames::imapMethodKey).toString() == SettingsNames::methodSSL) {
-        factory.reset(new Imap::Mailbox::SslSocketFactory(
-                          s.value(SettingsNames::imapHostKey).toString(),
-                          s.value(SettingsNames::imapPortKey, QString::number(Common::PORT_IMAPS)).toUInt()));
-    } else {
-        QStringList args = s.value(SettingsNames::imapProcessKey).toString().split(QLatin1Char(' '));
-        if (args.isEmpty()) {
-            // it's going to fail anyway
-            args << QLatin1String("");
-        }
-        QString appName = args.takeFirst();
-        factory.reset(new Imap::Mailbox::ProcessSocketFactory(appName, args));
-    }
-
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-    QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-#else
-    QString cacheDir = QDesktopServices::storageLocation(QDesktopServices::CacheLocation);
-#endif
-    if (cacheDir.isEmpty())
-        cacheDir = QDir::homePath() + QLatin1String("/.") + QCoreApplication::applicationName();
-    Imap::Mailbox::AbstractCache *cache = 0;
-
-    bool shouldUsePersistentCache = s.value(SettingsNames::cacheOfflineKey).toString() != SettingsNames::cacheOfflineNone;
-    if (shouldUsePersistentCache) {
-        if (! QDir().mkpath(cacheDir)) {
-            QMessageBox::critical(this, tr("Cache Error"), tr("Failed to create directory %1").arg(cacheDir));
-            shouldUsePersistentCache = false;
-        }
-        QFile::Permissions expectedPerms = QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner;
-        if (QFileInfo(cacheDir).permissions() != expectedPerms) {
-            if (!QFile::setPermissions(cacheDir, expectedPerms)) {
-#ifndef Q_OS_WIN32
-                QMessageBox::critical(this, tr("Cache Error"), tr("Failed to set safe permissions on cache directory %1").arg(cacheDir));
-                shouldUsePersistentCache = false;
-#endif
-            }
-        }
-    }
+    m_messageWidget->messageView->setNetworkWatcher(qobject_cast<Imap::Mailbox::NetworkWatcher*>(m_imapAccess->networkWatcher()));
 
     //setProperty( "trojita-sqlcache-commit-period", QVariant(5000) );
     //setProperty( "trojita-sqlcache-commit-delay", QVariant(1000) );
 
-    if (! shouldUsePersistentCache) {
-        cache = new Imap::Mailbox::MemoryCache(this, QString());
-    } else {
-        cache = new Imap::Mailbox::CombinedCache(this, QLatin1String("trojita-imap-cache"), cacheDir);
-        connect(cache, SIGNAL(error(QString)), this, SLOT(cacheError(QString)));
-        if (! static_cast<Imap::Mailbox::CombinedCache *>(cache)->open()) {
-            // Error message was already shown by the cacheError() slot
-            cache->deleteLater();
-            cache = new Imap::Mailbox::MemoryCache(this, QString());
-        } else {
-            if (s.value(SettingsNames::cacheOfflineKey).toString() == SettingsNames::cacheOfflineAll) {
-                cache->setRenewalThreshold(0);
-            } else {
-                bool ok;
-                int num = s.value(SettingsNames::cacheOfflineNumberDaysKey, 30).toInt(&ok);
-                if (!ok)
-                    num = 30;
-                cache->setRenewalThreshold(num);
-            }
-        }
-    }
-    model = new Imap::Mailbox::Model(this, cache, factory, taskFactory, s.value(SettingsNames::imapStartOffline).toBool());
-    model->setObjectName(QLatin1String("model"));
-    model->setCapabilitiesBlacklist(s.value(SettingsNames::imapBlacklistedCapabilities).toStringList());
-    if (s.value(SettingsNames::imapEnableId, true).toBool()) {
-        model->setProperty("trojita-imap-enable-id", true);
-    }
-    mboxModel = new Imap::Mailbox::MailboxModel(this, model);
-    mboxModel->setObjectName(QLatin1String("mboxModel"));
-    prettyMboxModel = new Imap::Mailbox::PrettyMailboxModel(this, mboxModel);
-    prettyMboxModel->setObjectName(QLatin1String("prettyMboxModel"));
-    msgListModel = new Imap::Mailbox::MsgListModel(this, model);
-    msgListModel->setObjectName(QLatin1String("msgListModel"));
-    threadingMsgListModel = new Imap::Mailbox::ThreadingMsgListModel(this);
-    threadingMsgListModel->setObjectName(QLatin1String("threadingMsgListModel"));
-    threadingMsgListModel->setSourceModel(msgListModel);
-    connect(threadingMsgListModel, SIGNAL(sortingFailed()), msgListWidget, SLOT(slotSortingFailed()));
+    auto realThreadingModel = qobject_cast<Imap::Mailbox::ThreadingMsgListModel*>(m_imapAccess->threadingMsgListModel());
+    Q_ASSERT(realThreadingModel);
+    auto realMsgListModel = qobject_cast<Imap::Mailbox::MsgListModel*>(m_imapAccess->msgListModel());
+    Q_ASSERT(realMsgListModel);
+
+    prettyMboxModel = new Imap::Mailbox::PrettyMailboxModel(this, qobject_cast<QAbstractItemModel *>(m_imapAccess->mailboxModel()));
+    prettyMboxModel->setObjectName(QStringLiteral("prettyMboxModel"));
+    connect(realThreadingModel, &Imap::Mailbox::ThreadingMsgListModel::sortingFailed,
+            msgListWidget, &MessageListWidget::slotSortingFailed);
     prettyMsgListModel = new Imap::Mailbox::PrettyMsgListModel(this);
-    prettyMsgListModel->setSourceModel(threadingMsgListModel);
-    prettyMsgListModel->setObjectName(QLatin1String("prettyMsgListModel"));
+    prettyMsgListModel->setSourceModel(m_imapAccess->threadingMsgListModel());
+    prettyMsgListModel->setObjectName(QStringLiteral("prettyMsgListModel"));
 
-    connect(mboxTree, SIGNAL(clicked(const QModelIndex &)), msgListModel, SLOT(setMailbox(const QModelIndex &)));
-    connect(mboxTree, SIGNAL(activated(const QModelIndex &)), msgListModel, SLOT(setMailbox(const QModelIndex &)));
-    connect(msgListModel, SIGNAL(dataChanged(QModelIndex,QModelIndex)), this, SLOT(updateMessageFlags()));
-    connect(msgListModel, SIGNAL(messagesAvailable()), msgListWidget->tree, SLOT(scrollToBottom()));
-    connect(msgListModel, SIGNAL(rowsInserted(QModelIndex,int,int)), msgListWidget, SLOT(slotAutoEnableDisableSearch()));
-    connect(msgListModel, SIGNAL(rowsRemoved(QModelIndex,int,int)), msgListWidget, SLOT(slotAutoEnableDisableSearch()));
-    connect(msgListModel, SIGNAL(layoutChanged()), msgListWidget, SLOT(slotAutoEnableDisableSearch()));
-    connect(msgListModel, SIGNAL(modelReset()), msgListWidget, SLOT(slotAutoEnableDisableSearch()));
+    connect(mboxTree, &MailBoxTreeView::clicked,
+            realMsgListModel,
+            static_cast<void (Imap::Mailbox::MsgListModel::*)(const QModelIndex &)>(&Imap::Mailbox::MsgListModel::setMailbox));
+    connect(mboxTree, &MailBoxTreeView::activated,
+            realMsgListModel,
+            static_cast<void (Imap::Mailbox::MsgListModel::*)(const QModelIndex &)>(&Imap::Mailbox::MsgListModel::setMailbox));
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::dataChanged, this, &MainWindow::updateMessageFlags);
+    connect(qobject_cast<Imap::Mailbox::MsgListModel*>(m_imapAccess->msgListModel()), &Imap::Mailbox::MsgListModel::messagesAvailable,
+            this, &MainWindow::slotScrollToUnseenMessage);
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::rowsInserted, msgListWidget, &MessageListWidget::slotAutoEnableDisableSearch);
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::rowsRemoved, msgListWidget, &MessageListWidget::slotAutoEnableDisableSearch);
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::rowsRemoved, this, &MainWindow::updateMessageFlags);
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::layoutChanged, msgListWidget, &MessageListWidget::slotAutoEnableDisableSearch);
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::layoutChanged, this, &MainWindow::updateMessageFlags);
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::modelReset, msgListWidget, &MessageListWidget::slotAutoEnableDisableSearch);
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::modelReset, this, &MainWindow::updateMessageFlags);
+    connect(realMsgListModel, &Imap::Mailbox::MsgListModel::mailboxChanged, this, &MainWindow::slotMailboxChanged);
 
-    connect(model, SIGNAL(alertReceived(const QString &)), this, SLOT(alertReceived(const QString &)));
-    connect(model, SIGNAL(connectionError(const QString &)), this, SLOT(connectionError(const QString &)));
-    connect(model, SIGNAL(authRequested()), this, SLOT(authenticationRequested()), Qt::QueuedConnection);
-    connect(model, SIGNAL(authAttemptFailed(QString)), this, SLOT(authenticationFailed(QString)));
-    connect(model, SIGNAL(needsSslDecision(QList<QSslCertificate>,QList<QSslError>)),
-            this, SLOT(sslErrors(QList<QSslCertificate>,QList<QSslError>)), Qt::QueuedConnection);
+    connect(imapModel(), &Imap::Mailbox::Model::alertReceived, this, &MainWindow::alertReceived);
+    connect(imapModel(), &Imap::Mailbox::Model::imapError, this, &MainWindow::imapError);
+    connect(imapModel(), &Imap::Mailbox::Model::networkError, this, &MainWindow::networkError);
+    connect(imapModel(), &Imap::Mailbox::Model::authRequested, this, &MainWindow::authenticationRequested, Qt::QueuedConnection);
 
-    connect(model, SIGNAL(networkPolicyOffline()), this, SLOT(networkPolicyOffline()));
-    connect(model, SIGNAL(networkPolicyExpensive()), this, SLOT(networkPolicyExpensive()));
-    connect(model, SIGNAL(networkPolicyOnline()), this, SLOT(networkPolicyOnline()));
+    connect(imapModel(), &Imap::Mailbox::Model::networkPolicyOffline, this, &MainWindow::networkPolicyOffline);
+    connect(imapModel(), &Imap::Mailbox::Model::networkPolicyExpensive, this, &MainWindow::networkPolicyExpensive);
+    connect(imapModel(), &Imap::Mailbox::Model::networkPolicyOnline, this, &MainWindow::networkPolicyOnline);
+    connect(imapModel(), &Imap::Mailbox::Model::connectionStateChanged, this, &MainWindow::showConnectionStatus);
 
-    connect(model, SIGNAL(connectionStateChanged(QObject *,Imap::ConnectionState)),
-            this, SLOT(showConnectionStatus(QObject *,Imap::ConnectionState)));
+    connect(imapModel(), &Imap::Mailbox::Model::mailboxDeletionFailed, this, &MainWindow::slotMailboxDeleteFailed);
+    connect(imapModel(), &Imap::Mailbox::Model::mailboxCreationFailed, this, &MainWindow::slotMailboxCreateFailed);
+    connect(imapModel(), &Imap::Mailbox::Model::mailboxSyncFailed, this, &MainWindow::slotMailboxSyncFailed);
 
-    connect(model, SIGNAL(mailboxDeletionFailed(QString,QString)), this, SLOT(slotMailboxDeleteFailed(QString,QString)));
-    connect(model, SIGNAL(mailboxCreationFailed(QString,QString)), this, SLOT(slotMailboxCreateFailed(QString,QString)));
+    connect(imapModel(), &Imap::Mailbox::Model::logged, imapLogger, &ProtocolLoggerWidget::slotImapLogged);
+    connect(imapModel(), &Imap::Mailbox::Model::connectionStateChanged, imapLogger, &ProtocolLoggerWidget::onConnectionClosed);
 
-    connect(model, SIGNAL(logged(uint,Common::LogMessage)), imapLogger, SLOT(slotImapLogged(uint,Common::LogMessage)));
+    auto nw = qobject_cast<Imap::Mailbox::NetworkWatcher *>(m_imapAccess->networkWatcher());
+    Q_ASSERT(nw);
+    connect(nw, &Imap::Mailbox::NetworkWatcher::reconnectAttemptScheduled,
+            this, [this](const int timeout) {
+            showStatusMessage(tr("Attempting to reconnect in %n seconds..", 0, timeout/1000));
+            });
+    connect(nw, &Imap::Mailbox::NetworkWatcher::resetReconnectState, this, &MainWindow::slotResetReconnectState);
 
-    connect(model, SIGNAL(mailboxFirstUnseenMessage(QModelIndex,QModelIndex)), this, SLOT(slotScrollToUnseenMessage(QModelIndex,QModelIndex)));
+    connect(imapModel(), &Imap::Mailbox::Model::mailboxFirstUnseenMessage, this, &MainWindow::slotScrollToUnseenMessage);
 
-    connect(model, SIGNAL(capabilitiesUpdated(QStringList)), this, SLOT(slotCapabilitiesUpdated(QStringList)));
+    connect(imapModel(), &Imap::Mailbox::Model::capabilitiesUpdated, this, &MainWindow::slotCapabilitiesUpdated);
 
-    connect(msgListModel, SIGNAL(modelReset()), this, SLOT(slotUpdateWindowTitle()));
-    connect(model, SIGNAL(messageCountPossiblyChanged(QModelIndex)), this, SLOT(slotUpdateWindowTitle()));
+    connect(m_imapAccess->msgListModel(), &QAbstractItemModel::modelReset, this, &MainWindow::slotUpdateWindowTitle);
+    connect(imapModel(), &Imap::Mailbox::Model::messageCountPossiblyChanged, this, &MainWindow::slotUpdateWindowTitle);
 
-    connect(prettyMsgListModel, SIGNAL(sortingPreferenceChanged(int,Qt::SortOrder)), this, SLOT(slotSortingConfirmed(int,Qt::SortOrder)));
+    connect(prettyMsgListModel, &Imap::Mailbox::PrettyMsgListModel::sortingPreferenceChanged, this, &MainWindow::slotSortingConfirmed);
 
     //Imap::Mailbox::ModelWatcher* w = new Imap::Mailbox::ModelWatcher( this );
-    //w->setModel( model );
+    //w->setModel( imapModel() );
 
     //ModelTest* tester = new ModelTest( prettyMboxModel, this ); // when testing, test just one model at time
 
     mboxTree->setModel(prettyMboxModel);
     msgListWidget->tree->setModel(prettyMsgListModel);
-    connect(msgListWidget->tree->selectionModel(), SIGNAL(selectionChanged(const QItemSelection &, const QItemSelection &)),
-            this, SLOT(msgListSelectionChanged(const QItemSelection &, const QItemSelection &)));
+    connect(msgListWidget->tree->selectionModel(), &QItemSelectionModel::selectionChanged, this, &MainWindow::updateMessageFlags);
 
-    allTree->setModel(model);
-    taskTree->setModel(model->taskModel());
-    connect(model->taskModel(), SIGNAL(layoutChanged()), taskTree, SLOT(expandAll()));
-    connect(model->taskModel(), SIGNAL(modelReset()), taskTree, SLOT(expandAll()));
-    connect(model->taskModel(), SIGNAL(rowsInserted(QModelIndex,int,int)), taskTree, SLOT(expandAll()));
-    connect(model->taskModel(), SIGNAL(rowsRemoved(QModelIndex,int,int)), taskTree, SLOT(expandAll()));
-    connect(model->taskModel(), SIGNAL(rowsMoved(QModelIndex,int,int,QModelIndex,int)), taskTree, SLOT(expandAll()));
+    allTree->setModel(imapModel());
+    taskTree->setModel(imapModel()->taskModel());
+    connect(imapModel()->taskModel(), &QAbstractItemModel::layoutChanged, taskTree, &QTreeView::expandAll);
+    connect(imapModel()->taskModel(), &QAbstractItemModel::modelReset, taskTree, &QTreeView::expandAll);
+    connect(imapModel()->taskModel(), &QAbstractItemModel::rowsInserted, taskTree, &QTreeView::expandAll);
+    connect(imapModel()->taskModel(), &QAbstractItemModel::rowsRemoved, taskTree, &QTreeView::expandAll);
+    connect(imapModel()->taskModel(), &QAbstractItemModel::rowsMoved, taskTree, &QTreeView::expandAll);
 
-    busyParsersIndicator->setImapModel(model);
-
-    // TODO write more addressbook backends and make this configurable
-    m_addressBook = new AbookAddressbook();
+    busyParsersIndicator->setImapModel(imapModel());
 }
 
-void MainWindow::msgListSelectionChanged(const QItemSelection &selected, const QItemSelection &deselected)
+void MainWindow::createSysTray()
 {
-    Q_UNUSED(deselected);
-    if (selected.indexes().isEmpty())
+    if (m_trayIcon)
         return;
 
-    QModelIndex index = selected.indexes().front();
-    if (index.data(Imap::Mailbox::RoleMessageUid).isValid()) {
-        updateMessageFlags(index);
-        msgView->setMessage(index);
+    qApp->setQuitOnLastWindowClosed(false);
+
+    m_trayIcon = new QSystemTrayIcon(this);
+    handleTrayIconChange();
+
+    QAction* quitAction = new QAction(tr("&Quit"), m_trayIcon);
+    connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
+
+    QMenu *trayIconMenu = new QMenu(this);
+    trayIconMenu->addAction(quitAction);
+    m_trayIcon->setContextMenu(trayIconMenu);
+
+    // QMenu cannot be a child of QSystemTrayIcon, and we don't want the QMenu in MainWindow scope.
+    connect(m_trayIcon, &QObject::destroyed, trayIconMenu, &QObject::deleteLater);
+
+    connect(m_trayIcon, &QSystemTrayIcon::activated, this, &MainWindow::slotIconActivated);
+    connect(imapModel(), &Imap::Mailbox::Model::messageCountPossiblyChanged, this, &MainWindow::handleTrayIconChange);
+    m_trayIcon->setVisible(true);
+    m_trayIcon->show();
+}
+
+void MainWindow::removeSysTray()
+{
+    delete m_trayIcon;
+    m_trayIcon = 0;
+
+    qApp->setQuitOnLastWindowClosed(true);
+}
+
+void MainWindow::slotToggleSysTray()
+{
+    bool showSystray = m_settings->value(Common::SettingsNames::guiShowSystray, QVariant(true)).toBool();
+    if (showSystray && !m_trayIcon && QSystemTrayIcon::isSystemTrayAvailable()) {
+        createSysTray();
+    } else if (!showSystray && m_trayIcon) {
+        removeSysTray();
     }
 }
 
-void MainWindow::msgListActivated(const QModelIndex &index)
+void MainWindow::handleTrayIconChange()
 {
-    Q_ASSERT(index.isValid());
-
-    if (qApp->keyboardModifiers() & Qt::ShiftModifier || qApp->keyboardModifiers() & Qt::ControlModifier)
+    if (!m_trayIcon)
         return;
 
-    if (! index.data(Imap::Mailbox::RoleMessageUid).isValid())
-        return;
+    QModelIndex mailbox = imapModel()->index(1, 0, QModelIndex());
 
-    if (index.column() != Imap::Mailbox::MsgListModel::SEEN) {
-        msgView->setMessage(index);
-        msgListWidget->tree->setCurrentIndex(index);
+    const bool isOffline = qobject_cast<Imap::Mailbox::NetworkWatcher *>(m_imapAccess->networkWatcher())->effectiveNetworkPolicy()
+            == Imap::Mailbox::NETWORK_OFFLINE;
+    auto pixmap = UiUtils::loadIcon(QStringLiteral("trojita"))
+                .pixmap(QSize(32, 32), isOffline ? QIcon::Disabled : QIcon::Normal);
+    QString tooltip;
+    auto profileName = QString::fromUtf8(qgetenv("TROJITA_PROFILE"));
+    if (profileName.isEmpty()) {
+        tooltip = QStringLiteral("Trojitá");
+    } else {
+        tooltip = QStringLiteral("Trojitá [%1]").arg(profileName);
     }
+
+    if (mailbox.isValid() && mailbox.data(Imap::Mailbox::RoleMailboxName).toString() == QLatin1String("INBOX")) {
+        if (mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toInt() > 0) {
+            QFont f;
+            f.setPixelSize(pixmap.height() * 0.59);
+            f.setWeight(QFont::Bold);
+
+            QString text = mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toString();
+            QFontMetrics fm(f);
+            if (mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toUInt() > 666) {
+                // You just have too many messages.
+                text = QStringLiteral("🐮");
+                fm = QFontMetrics(f);
+            } else if (fm.width(text) > pixmap.width()) {
+                f.setPixelSize(f.pixelSize() * pixmap.width() / fm.width(text));
+                fm = QFontMetrics(f);
+            }
+
+            QRect boundingRect = fm.tightBoundingRect(text);
+            boundingRect.setWidth(boundingRect.width() + 2);
+            boundingRect.setHeight(boundingRect.height() + 2);
+            boundingRect.moveCenter(QPoint(pixmap.width() / 2, pixmap.height() / 2));
+            boundingRect = boundingRect.intersected(pixmap.rect());
+
+            QPainterPath path;
+            path.addText(boundingRect.bottomLeft(), f, text);
+
+            QPainter painter(&pixmap);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(QColor(255,255,255, 180));
+            painter.setBrush(isOffline ? Qt::red : Qt::black);
+            painter.drawPath(path);
+
+            //: This is a tooltip for the tray icon. It will be prefixed by something like "Trojita" or "Trojita [work]"
+            tooltip += trUtf8(" - %n unread message(s)", 0, mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toInt());
+        }
+    } else if (isOffline) {
+        //: A tooltip suffix when offline. The prefix is something like "Trojita" or "Trojita [work]"
+        tooltip += tr(" - offline");
+    }
+    m_trayIcon->setToolTip(tooltip);
+    m_trayIcon->setIcon(QIcon(pixmap));
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (m_trayIcon && m_trayIcon->isVisible()) {
+        Util::askForSomethingUnlessTold(trUtf8("Trojitá"),
+                                        tr("The application will continue in systray. This can be disabled within the settings."),
+                                        Common::SettingsNames::guiOnSystrayClose, QMessageBox::Ok, this, m_settings);
+        hide();
+        event->ignore();
+    }
+}
+
+bool MainWindow::eventFilter(QObject *o, QEvent *e)
+{
+    if (msgListWidget && o == msgListWidget->tree && m_messageWidget->messageView) {
+        if (e->type() == QEvent::KeyPress) {
+            QKeyEvent *keyEvent = static_cast<QKeyEvent *>(e);
+            if (keyEvent->key() == Qt::Key_Space || keyEvent->key() == Qt::Key_Backspace) {
+                QCoreApplication::sendEvent(m_messageWidget, keyEvent);
+                return true;
+            }
+            return false;
+        }
+        return false;
+    }
+    if (msgListWidget && msgListWidget->tree && o == msgListWidget->tree->header()->viewport()) {
+        // installed if sorting is not really possible.
+        QWidget *header = static_cast<QWidget*>(o);
+        QMouseEvent *mouse = static_cast<QMouseEvent*>(e);
+        if (e->type() == QEvent::MouseButtonPress) {
+            if (mouse->button() == Qt::LeftButton && header->cursor().shape() == Qt::ArrowCursor) {
+                m_headerDragStart = mouse->pos();
+            }
+            return false;
+        }
+        if (e->type() == QEvent::MouseButtonRelease) {
+            if (mouse->button() == Qt::LeftButton && header->cursor().shape() == Qt::ArrowCursor &&
+               (m_headerDragStart - mouse->pos()).manhattanLength() < QApplication::startDragDistance()) {
+                    m_actionSortDescending->toggle();
+                    Qt::SortOrder order = m_actionSortDescending->isChecked() ? Qt::DescendingOrder : Qt::AscendingOrder;
+                    msgListWidget->tree->header()->setSortIndicator(-1, order);
+                    return true; // prevent regular click
+            }
+        }
+    }
+    return false;
+}
+
+void MainWindow::slotIconActivated(const QSystemTrayIcon::ActivationReason reason)
+{
+    if (reason == QSystemTrayIcon::Trigger) {
+        setVisible(!isVisible());
+        if (isVisible())
+            showMainWindow();
+    }
+}
+
+void MainWindow::showMainWindow()
+{
+    setVisible(true);
+    activateWindow();
+    raise();
 }
 
 void MainWindow::msgListClicked(const QModelIndex &index)
@@ -693,14 +1071,34 @@ void MainWindow::msgListClicked(const QModelIndex &index)
     if (! index.data(Imap::Mailbox::RoleMessageUid).isValid())
         return;
 
+    // Because it's quite possible that we have switched into another mailbox, make sure that we're in the "current" one so that
+    // user will be notified about new arrivals, etc.
+    QModelIndex translated = Imap::deproxifiedIndex(index);
+    imapModel()->switchToMailbox(translated.parent().parent());
+
     if (index.column() == Imap::Mailbox::MsgListModel::SEEN) {
-        QModelIndex translated;
-        Imap::Mailbox::Model::realTreeItem(index, 0, &translated);
         if (!translated.data(Imap::Mailbox::RoleIsFetched).toBool())
             return;
         Imap::Mailbox::FlagsOperation flagOp = translated.data(Imap::Mailbox::RoleMessageIsMarkedRead).toBool() ?
                                                Imap::Mailbox::FLAG_REMOVE : Imap::Mailbox::FLAG_ADD;
-        model->markMessagesRead(QModelIndexList() << translated, flagOp);
+        imapModel()->markMessagesRead(QModelIndexList() << translated, flagOp);
+
+        if (translated == m_messageWidget->messageView->currentMessage()) {
+            m_messageWidget->messageView->stopAutoMarkAsRead();
+        }
+    } else if (index.column() == Imap::Mailbox::MsgListModel::FLAGGED) {
+        if (!translated.data(Imap::Mailbox::RoleIsFetched).toBool())
+            return;
+
+        Imap::Mailbox::FlagsOperation flagOp = translated.data(Imap::Mailbox::RoleMessageIsMarkedFlagged).toBool() ?
+                                               Imap::Mailbox::FLAG_REMOVE : Imap::Mailbox::FLAG_ADD;
+        imapModel()->setMessageFlags(QModelIndexList() << translated, Imap::Mailbox::FlagNames::flagged, flagOp);
+    } else {
+        if ((m_messageWidget->isVisible() && !m_messageWidget->size().isEmpty()) || m_layoutMode == LAYOUT_ONE_AT_TIME) {
+            // isVisible() won't work, the splitter manipulates width, not the visibility state
+            m_messageWidget->messageView->setMessage(index);
+        }
+        msgListWidget->tree->setCurrentIndex(index);
     }
 }
 
@@ -711,22 +1109,15 @@ void MainWindow::msgListDoubleClicked(const QModelIndex &index)
     if (! index.data(Imap::Mailbox::RoleMessageUid).isValid())
         return;
 
-    MessageView *newView = new MessageView(0);
-    QModelIndex realIndex;
-    const Imap::Mailbox::Model *realModel;
-    Imap::Mailbox::TreeItemMessage *message = dynamic_cast<Imap::Mailbox::TreeItemMessage *>(
-                Imap::Mailbox::Model::realTreeItem(index, &realModel, &realIndex));
-    Q_ASSERT(message);
-    Q_ASSERT(realModel == model);
-    newView->setMessage(index);
-
-    QScrollArea *widget = new QScrollArea();
+    CompleteMessageWidget *widget = new CompleteMessageWidget(0, m_settings, m_pluginManager);
+    widget->messageView->setMessage(index);
+    widget->messageView->setNetworkWatcher(qobject_cast<Imap::Mailbox::NetworkWatcher*>(m_imapAccess->networkWatcher()));
     widget->setFocusPolicy(Qt::StrongFocus);
-    widget->setWidget(newView);
-    widget->setWidgetResizable(true);
-    widget->setWindowTitle(message->envelope(model).subject);
+    widget->setWindowTitle(index.data(Imap::Mailbox::RoleMessageSubject).toString());
     widget->setAttribute(Qt::WA_DeleteOnClose);
     widget->resize(800, 600);
+    QAction *closeAction = ShortcutHandler::instance()->createAction(QStringLiteral("action_messagewindow_close"), widget, SLOT(close()), widget);
+    widget->addAction(closeAction);
     widget->show();
 }
 
@@ -736,6 +1127,7 @@ void MainWindow::showContextMenuMboxTree(const QPoint &position)
     if (mboxTree->indexAt(position).isValid()) {
         actionList.append(createChildMailbox);
         actionList.append(deleteCurrentMailbox);
+        actionList.append(m_actionMarkMailboxAsRead);
         actionList.append(resyncMbox);
         actionList.append(reloadMboxList);
 
@@ -745,7 +1137,7 @@ void MainWindow::showContextMenuMboxTree(const QPoint &position)
 #ifdef XTUPLE_CONNECT
         actionList.append(xtIncludeMailboxInSync);
         xtIncludeMailboxInSync->setChecked(
-            QSettings().value(Common::SettingsNames::xtSyncMailboxList).toStringList().contains(
+            m_settings->value(Common::SettingsNames::xtSyncMailboxList).toStringList().contains(
                 mboxTree->indexAt(position).data(Imap::Mailbox::RoleMailboxName).toString()));
 #endif
     } else {
@@ -761,10 +1153,15 @@ void MainWindow::showContextMenuMsgListTree(const QPoint &position)
     QList<QAction *> actionList;
     QModelIndex index = msgListWidget->tree->indexAt(position);
     if (index.isValid()) {
-        updateMessageFlags(index);
+        updateMessageFlagsOf(index);
         actionList.append(markAsRead);
         actionList.append(markAsDeleted);
+        actionList.append(markAsFlagged);
+        actionList.append(markAsJunk);
+        actionList.append(markAsNotJunk);
+        actionList.append(m_actionMarkMailboxAsRead);
         actionList.append(saveWholeMessage);
+        actionList.append(viewMsgSource);
         actionList.append(viewMsgHeaders);
     }
     if (! actionList.isEmpty())
@@ -784,44 +1181,56 @@ void MainWindow::slotReloadMboxList()
                 Imap::Mailbox::Model::realTreeItem(item)
                                                );
         Q_ASSERT(mbox);
-        mbox->rescanForChildMailboxes(model);
+        mbox->rescanForChildMailboxes(imapModel());
     }
 }
 
 /** @short Request a check for new messages in selected mailbox */
 void MainWindow::slotResyncMbox()
 {
-    if (! model->isNetworkAvailable())
+    if (! imapModel()->isNetworkAvailable())
         return;
 
     Q_FOREACH(const QModelIndex &item, mboxTree->selectionModel()->selectedIndexes()) {
         Q_ASSERT(item.isValid());
         if (item.column() != 0)
             continue;
-        Imap::Mailbox::TreeItemMailbox *mbox = dynamic_cast<Imap::Mailbox::TreeItemMailbox *>(
-                Imap::Mailbox::Model::realTreeItem(item)
-                                               );
-        Q_ASSERT(mbox);
-        model->resyncMailbox(item);
+        imapModel()->resyncMailbox(item);
     }
 }
 
 void MainWindow::alertReceived(const QString &message)
 {
+    //: "ALERT" is a special warning which we're required to show to the user
     QMessageBox::warning(this, tr("IMAP Alert"), message);
 }
 
-void MainWindow::connectionError(const QString &message)
+void MainWindow::imapError(const QString &message)
 {
-    if (QSettings().contains(Common::SettingsNames::imapMethodKey)) {
-        QMessageBox::critical(this, tr("Connection Error"), message);
-        // Show the IMAP logger -- maybe some user will take that as a hint that they shall include it in the bug report.
-        // </joke>
-        showImapLogger->setChecked(true);
-    } else {
-        // hack: this slot is called even on the first run with no configuration
-        // We shouldn't have to worry about that, since the dialog is already scheduled for calling
-        // -> do nothing
+    QMessageBox::critical(this, tr("IMAP Protocol Error"), message);
+    // Show the IMAP logger -- maybe some user will take that as a hint that they shall include it in the bug report.
+    // </joke>
+    showImapLogger->setChecked(true);
+}
+
+void MainWindow::networkError(const QString &message)
+{
+    const QString title = tr("Network Error");
+    if (!m_networkErrorMessageBox) {
+        m_networkErrorMessageBox = new QMessageBox(QMessageBox::Critical, title,
+                                                   QString(), QMessageBox::Ok, this);
+    }
+    // User must be informed about a new (but not recurring) error
+    if (message != m_networkErrorMessageBox->text()) {
+        m_networkErrorMessageBox->setText(message);
+        if (qApp->applicationState() == Qt::ApplicationActive) {
+            m_networkErrorMessageBox->setProperty(netErrorUnseen, false);
+            m_networkErrorMessageBox->show();
+        } else {
+            m_networkErrorMessageBox->setProperty(netErrorUnseen, true);
+            if (m_trayIcon && m_trayIcon->isVisible())
+                m_trayIcon->showMessage(title, message, QSystemTrayIcon::Warning, 3333);
+        }
     }
 }
 
@@ -831,27 +1240,25 @@ void MainWindow::cacheError(const QString &message)
                           tr("The caching subsystem managing a cache of the data already "
                              "downloaded from the IMAP server is having troubles. "
                              "All caching will be disabled.\n\n%1").arg(message));
-    if (model)
-        model->setCache(new Imap::Mailbox::MemoryCache(model, QString()));
 }
 
 void MainWindow::networkPolicyOffline()
 {
-    netOffline->setChecked(true);
     netExpensive->setChecked(false);
     netOnline->setChecked(false);
+    netOffline->setChecked(true);
     updateActionsOnlineOffline(false);
-    networkIndicator->setDefaultAction(netOffline);
-    statusBar()->showMessage(tr("Offline"), 0);
+    showStatusMessage(tr("Offline"));
+    handleTrayIconChange();
 }
 
 void MainWindow::networkPolicyExpensive()
 {
     netOffline->setChecked(false);
-    netExpensive->setChecked(true);
     netOnline->setChecked(false);
+    netExpensive->setChecked(true);
     updateActionsOnlineOffline(true);
-    networkIndicator->setDefaultAction(netExpensive);
+    handleTrayIconChange();
 }
 
 void MainWindow::networkPolicyOnline()
@@ -860,119 +1267,139 @@ void MainWindow::networkPolicyOnline()
     netExpensive->setChecked(false);
     netOnline->setChecked(true);
     updateActionsOnlineOffline(true);
-    networkIndicator->setDefaultAction(netOnline);
+    handleTrayIconChange();
+}
+
+/** @short Deletes a network error message box instance upon resetting of reconnect state */
+void MainWindow::slotResetReconnectState()
+{
+    if (m_networkErrorMessageBox) {
+        delete m_networkErrorMessageBox;
+        m_networkErrorMessageBox = 0;
+    }
 }
 
 void MainWindow::slotShowSettings()
 {
-    SettingsDialog *dialog = new SettingsDialog(this, m_senderIdentities);
+    SettingsDialog *dialog = new SettingsDialog(this, m_senderIdentities, m_settings);
     if (dialog->exec() == QDialog::Accepted) {
         // FIXME: wipe cache in case we're moving between servers
         nukeModels();
         setupModels();
         connectModelActions();
+        // The systray is still connected to the old model -- got to make sure it's getting updated
+        removeSysTray();
+        slotToggleSysTray();
     }
+    QString method = m_settings->value(Common::SettingsNames::imapMethodKey).toString();
+    if (method != Common::SettingsNames::methodTCP && method != Common::SettingsNames::methodSSL &&
+            method != Common::SettingsNames::methodProcess ) {
+        QMessageBox::critical(this, tr("No Configuration"),
+                              trUtf8("No IMAP account is configured. Trojitá cannot do much without one."));
+    }
+    applySizesAndState();
 }
 
 void MainWindow::authenticationRequested()
 {
-    QSettings s;
-    QString user = s.value(Common::SettingsNames::imapUserKey).toString();
-    QString pass = s.value(Common::SettingsNames::imapPassKey).toString();
+    Plugins::PasswordPlugin *password = pluginManager()->password();
+    if (password) {
+        // FIXME: use another account-id at some point in future
+        //        Currently the accountName will be empty unless Trojita has been
+        //        called with a profile, and then the profile will be used as the
+        //        accountName.
+        QString accountName = m_imapAccess->accountName();
+        if (accountName.isEmpty())
+            accountName = QStringLiteral("account-0");
+        Plugins::PasswordJob *job = password->requestPassword(accountName, QStringLiteral("imap"));
+        if (job) {
+            connect(job, &Plugins::PasswordJob::passwordAvailable, this, [this](const QString &password) {
+                authenticationContinue(password);
+            });
+            connect(job, &Plugins::PasswordJob::error, this, [this](const Plugins::PasswordJob::Error error, const QString &message) {
+                if (error == Plugins::PasswordJob::Error::NoSuchPassword) {
+                    authenticationContinue(QString());
+                } else {
+                    authenticationContinue(QString(), tr("Failed to retrieve password from the store: %1").arg(message));
+                }
+            });
+            job->setAutoDelete(true);
+            job->start();
+            return;
+        }
+    }
+
+    authenticationContinue(QString());
+
+}
+
+void MainWindow::authenticationContinue(const QString &password, const QString &errorMessage)
+{
+    const QString &user = m_settings->value(Common::SettingsNames::imapUserKey).toString();
+    QString pass = password;
     if (m_ignoreStoredPassword || pass.isEmpty()) {
-        bool ok;
-        pass = QInputDialog::getText(this, tr("IMAP Password"),
-                                     tr("Please provide password for %1 on %2:").arg(
-                                         user, QSettings().value(Common::SettingsNames::imapHostKey).toString()),
-                                     QLineEdit::Password, QString::null, &ok);
-        if (ok) {
-            model->setImapUser(user);
-            model->setImapPassword(pass);
-        } else {
-            model->unsetImapPassword();
-        }
+        auto dialog = PasswordDialog::getPassword(this, tr("Authentication Required"),
+                                                  tr("<p>Please provide IMAP password for user <b>%1</b> on <b>%2</b>:</p>").arg(
+                                                      user.toHtmlEscaped(),
+                                                      m_settings->value(Common::SettingsNames::imapHostKey).toString().toHtmlEscaped()
+                                                      ),
+                                                  errorMessage + (errorMessage.isEmpty() ? QString() : QStringLiteral("\n\n"))
+                                                  + imapModel()->imapAuthError());
+        connect(dialog, &PasswordDialog::gotPassword, imapModel(), &Imap::Mailbox::Model::setImapPassword);
+        connect(dialog, &PasswordDialog::rejected, imapModel(), &Imap::Mailbox::Model::unsetImapPassword);
     } else {
-        model->setImapUser(user);
-        model->setImapPassword(pass);
+        imapModel()->setImapPassword(pass);
     }
 }
 
-void MainWindow::authenticationFailed(const QString &message)
+void MainWindow::checkSslPolicy()
 {
-    m_ignoreStoredPassword = true;
-    QMessageBox::warning(this, tr("Login Failed"), message);
-}
-
-void MainWindow::sslErrors(const QList<QSslCertificate> &certificateChain, const QList<QSslError> &errors)
-{
-    QSettings s;
-    QByteArray lastKnownCertPem = s.value(Common::SettingsNames::imapSslPemCertificate).toByteArray();
-    QList<QSslCertificate> lastKnownCerts = lastKnownCertPem.isEmpty() ?
-                QList<QSslCertificate>() :
-                QSslCertificate::fromData(lastKnownCertPem, QSsl::Pem);
-    if (!certificateChain.isEmpty()) {
-        if (!lastKnownCerts.isEmpty()) {
-            if (certificateChain == lastKnownCerts) {
-                // It's the same certificate as the last time; we should accept that
-                model->setSslPolicy(certificateChain, errors, true);
-                return;
-            }
-        }
-    }
-
-    QString message;
-    QString title;
-    Imap::Mailbox::CertificateUtils::IconType icon;
-
-    Imap::Mailbox::CertificateUtils::formatSslState(certificateChain, lastKnownCerts, lastKnownCertPem, errors,
-                                                    &title, &message, &icon);
-
-    if (QMessageBox(static_cast<QMessageBox::Icon>(icon), title, message, QMessageBox::Yes | QMessageBox::No, this).exec() == QMessageBox::Yes) {
-        if (!certificateChain.isEmpty()) {
-            QByteArray buf;
-            Q_FOREACH(const QSslCertificate &cert, certificateChain) {
-                buf.append(cert.toPem());
-            }
-            s.setValue(Common::SettingsNames::imapSslPemCertificate, buf);
-
-#ifdef XTUPLE_CONNECT
-            QSettings xtSettings(QSettings::UserScope, QString::fromLatin1("xTuple.com"), QString::fromLatin1("xTuple"));
-            xtSettings.setValue(Common::SettingsNames::imapSslPemCertificate, buf);
-#endif
-        }
-        model->setSslPolicy(certificateChain, errors, true);
-    } else {
-        model->setSslPolicy(certificateChain, errors, false);
-    }
+    m_imapAccess->setSslPolicy(QMessageBox(static_cast<QMessageBox::Icon>(m_imapAccess->sslInfoIcon()),
+                                           m_imapAccess->sslInfoTitle(), m_imapAccess->sslInfoMessage(),
+                                           QMessageBox::Yes | QMessageBox::No, this).exec() == QMessageBox::Yes);
 }
 
 void MainWindow::nukeModels()
 {
-    msgView->setEmpty();
+    m_messageWidget->messageView->setEmpty();
     mboxTree->setModel(0);
     msgListWidget->tree->setModel(0);
     allTree->setModel(0);
     taskTree->setModel(0);
-    prettyMsgListModel->deleteLater();
+    delete prettyMsgListModel;
     prettyMsgListModel = 0;
-    threadingMsgListModel->deleteLater();
-    threadingMsgListModel = 0;
-    msgListModel->deleteLater();
-    msgListModel = 0;
-    mboxModel->deleteLater();
-    mboxModel = 0;
-    prettyMboxModel->deleteLater();
+    delete prettyMboxModel;
     prettyMboxModel = 0;
-    model->deleteLater();
-    model = 0;
+}
+
+void MainWindow::recoverDrafts()
+{
+    QDir draftPath(Common::writablePath(Common::LOCATION_CACHE) + QLatin1String("Drafts/"));
+    QStringList drafts(draftPath.entryList(QStringList() << QStringLiteral("*.draft")));
+    Q_FOREACH(const QString &draft, drafts) {
+        ComposeWidget *w = ComposeWidget::warnIfMsaNotConfigured(ComposeWidget::createDraft(this, draftPath.filePath(draft)), this);
+        // No need to further try creating widgets for drafts if a nullptr is being returned by ComposeWidget::warnIfMsaNotConfigured
+        if (!w)
+            break;
+    }
 }
 
 void MainWindow::slotComposeMail()
 {
-    invokeComposeDialog();
+    ComposeWidget::warnIfMsaNotConfigured(ComposeWidget::createBlank(this), this);
 }
 
-void MainWindow::handleMarkAsRead(bool value)
+void MainWindow::slotEditDraft()
+{
+    QString path(Common::writablePath(Common::LOCATION_DATA) + tr("Drafts"));
+    QDir().mkpath(path);
+    path = QFileDialog::getOpenFileName(this, tr("Edit draft"), path, tr("Drafts") + QLatin1String(" (*.draft)"));
+    if (!path.isNull()) {
+        ComposeWidget::warnIfMsaNotConfigured(ComposeWidget::createDraft(this, path), this);
+    }
+}
+
+QModelIndexList MainWindow::translatedSelection() const
 {
     QModelIndexList translatedIndexes;
     Q_FOREACH(const QModelIndex &item, msgListWidget->tree->selectionModel()->selectedIndexes()) {
@@ -981,17 +1408,21 @@ void MainWindow::handleMarkAsRead(bool value)
             continue;
         if (!item.data(Imap::Mailbox::RoleMessageUid).isValid())
             continue;
-        QModelIndex translated;
-        Imap::Mailbox::Model::realTreeItem(item, 0, &translated);
-        translatedIndexes << translated;
+        translatedIndexes << Imap::deproxifiedIndex(item);
     }
+    return translatedIndexes;
+}
+
+void MainWindow::handleMarkAsRead(bool value)
+{
+    const QModelIndexList translatedIndexes = translatedSelection();
     if (translatedIndexes.isEmpty()) {
         qDebug() << "Model::handleMarkAsRead: no valid messages";
     } else {
-        if (value)
-            model->markMessagesRead(translatedIndexes, Imap::Mailbox::FLAG_ADD);
-        else
-            model->markMessagesRead(translatedIndexes, Imap::Mailbox::FLAG_REMOVE);
+        imapModel()->markMessagesRead(translatedIndexes, value ? Imap::Mailbox::FLAG_ADD : Imap::Mailbox::FLAG_REMOVE);
+        if (translatedIndexes.contains(m_messageWidget->messageView->currentMessage())) {
+            m_messageWidget->messageView->stopAutoMarkAsRead();
+        }
     }
 }
 
@@ -1002,7 +1433,7 @@ void MainWindow::slotNextUnread()
     bool wrapped = false;
     while (current.isValid()) {
         if (!current.data(Imap::Mailbox::RoleMessageIsMarkedRead).toBool() && msgListWidget->tree->currentIndex() != current) {
-            msgView->setMessage(current);
+            m_messageWidget->messageView->setMessage(current);
             msgListWidget->tree->setCurrentIndex(current);
             return;
         }
@@ -1038,7 +1469,7 @@ void MainWindow::slotPreviousUnread()
     bool wrapped = false;
     while (current.isValid()) {
         if (!current.data(Imap::Mailbox::RoleMessageIsMarkedRead).toBool() && msgListWidget->tree->currentIndex() != current) {
-            msgView->setMessage(current);
+            m_messageWidget->messageView->setMessage(current);
             msgListWidget->tree->setCurrentIndex(current);
             return;
         }
@@ -1065,30 +1496,59 @@ void MainWindow::slotPreviousUnread()
 
 void MainWindow::handleMarkAsDeleted(bool value)
 {
-    QModelIndexList translatedIndexes;
-    Q_FOREACH(const QModelIndex &item, msgListWidget->tree->selectionModel()->selectedIndexes()) {
-        Q_ASSERT(item.isValid());
-        if (item.column() != 0)
-            continue;
-        if (!item.data(Imap::Mailbox::RoleMessageUid).isValid())
-            continue;
-        QModelIndex translated;
-        Imap::Mailbox::Model::realTreeItem(item, 0, &translated);
-        translatedIndexes << translated;
-    }
+    const QModelIndexList translatedIndexes = translatedSelection();
     if (translatedIndexes.isEmpty()) {
         qDebug() << "Model::handleMarkAsDeleted: no valid messages";
     } else {
-        if (value)
-            model->markMessagesDeleted(translatedIndexes, Imap::Mailbox::FLAG_ADD);
-        else
-            model->markMessagesDeleted(translatedIndexes, Imap::Mailbox::FLAG_REMOVE);
+        imapModel()->markMessagesDeleted(translatedIndexes, value ? Imap::Mailbox::FLAG_ADD : Imap::Mailbox::FLAG_REMOVE);
     }
 }
 
+void MainWindow::handleMarkAsFlagged(const bool value)
+{
+    const QModelIndexList translatedIndexes = translatedSelection();
+    if (translatedIndexes.isEmpty()) {
+        qDebug() << "Model::handleMarkAsFlagged: no valid messages";
+    } else {
+        imapModel()->setMessageFlags(translatedIndexes, Imap::Mailbox::FlagNames::flagged, value ? Imap::Mailbox::FLAG_ADD : Imap::Mailbox::FLAG_REMOVE);
+    }
+}
+
+void MainWindow::handleMarkAsJunk(const bool value)
+{
+    const QModelIndexList translatedIndexes = translatedSelection();
+    if (translatedIndexes.isEmpty()) {
+        qDebug() << "Model::handleMarkAsJunk: no valid messages";
+    } else {
+        if (value) {
+            imapModel()->setMessageFlags(translatedIndexes, Imap::Mailbox::FlagNames::notjunk, Imap::Mailbox::FLAG_REMOVE);
+        }
+        imapModel()->setMessageFlags(translatedIndexes, Imap::Mailbox::FlagNames::junk, value ? Imap::Mailbox::FLAG_ADD : Imap::Mailbox::FLAG_REMOVE);
+    }
+}
+
+void MainWindow::handleMarkAsNotJunk(const bool value)
+{
+    const QModelIndexList translatedIndexes = translatedSelection();
+    if (translatedIndexes.isEmpty()) {
+        qDebug() << "Model::handleMarkAsNotJunk: no valid messages";
+    } else {
+        if (value) {
+          imapModel()->setMessageFlags(translatedIndexes, Imap::Mailbox::FlagNames::junk, Imap::Mailbox::FLAG_REMOVE);
+        }
+        imapModel()->setMessageFlags(translatedIndexes, Imap::Mailbox::FlagNames::notjunk, value ? Imap::Mailbox::FLAG_ADD : Imap::Mailbox::FLAG_REMOVE);
+    }
+}
+
+
 void MainWindow::slotExpunge()
 {
-    model->expungeMailbox(msgListModel->currentMailbox());
+    imapModel()->expungeMailbox(qobject_cast<Imap::Mailbox::MsgListModel *>(m_imapAccess->msgListModel())->currentMailbox());
+}
+
+void MainWindow::slotMarkCurrentMailboxRead()
+{
+    imapModel()->markMailboxAsRead(mboxTree->currentIndex());
 }
 
 void MainWindow::slotCreateMailboxBelowCurrent()
@@ -1124,7 +1584,11 @@ void MainWindow::createMailboxBelow(const QModelIndex &index)
         if (ui.otherMailboxes->isChecked())
             parts << QString();
         QString targetName = parts.join(mboxPtr ? mboxPtr->separator() : QString());   // FIXME: top-level separator
-        model->createMailbox(targetName);
+        imapModel()->createMailbox(targetName,
+                                   ui.subscribe->isChecked() ?
+                                       Imap::Mailbox::AutoSubscription::SUBSCRIBE :
+                                       Imap::Mailbox::AutoSubscription::NO_EXPLICIT_SUBSCRIPTION
+                                       );
     }
 }
 
@@ -1133,26 +1597,57 @@ void MainWindow::slotDeleteCurrentMailbox()
     if (! mboxTree->currentIndex().isValid())
         return;
 
-    Imap::Mailbox::TreeItemMailbox *mailbox = dynamic_cast<Imap::Mailbox::TreeItemMailbox *>(
-                Imap::Mailbox::Model::realTreeItem(mboxTree->currentIndex()));
-    Q_ASSERT(mailbox);
+    QModelIndex mailbox = Imap::deproxifiedIndex(mboxTree->currentIndex());
+    Q_ASSERT(mailbox.isValid());
+    QString name = mailbox.data(Imap::Mailbox::RoleMailboxName).toString();
 
     if (QMessageBox::question(this, tr("Delete Mailbox"),
-                              tr("Are you sure to delete mailbox %1?").arg(mailbox->mailbox()),
+                              tr("Are you sure to delete mailbox %1?").arg(name),
                               QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
-        model->deleteMailbox(mailbox->mailbox());
+        imapModel()->deleteMailbox(name);
     }
 }
 
 void MainWindow::updateMessageFlags()
 {
-    updateMessageFlags(msgListWidget->tree->currentIndex());
+    updateMessageFlagsOf(QModelIndex());
 }
 
-void MainWindow::updateMessageFlags(const QModelIndex &index)
+void MainWindow::updateMessageFlagsOf(const QModelIndex &index)
 {
-    markAsRead->setChecked(index.data(Imap::Mailbox::RoleMessageIsMarkedRead).toBool());
-    markAsDeleted->setChecked(index.data(Imap::Mailbox::RoleMessageIsMarkedDeleted).toBool());
+    QModelIndexList indexes = index.isValid() ? QModelIndexList() << index : translatedSelection();
+    const bool isValid = !indexes.isEmpty() &&
+                         // either we operate on the -already valided- selection or the index must be valid
+                         (!index.isValid() || index.data(Imap::Mailbox::RoleMessageUid).toUInt() > 0);
+    const bool okToModify = imapModel()->isNetworkAvailable() && isValid;
+
+    markAsRead->setEnabled(okToModify);
+    markAsDeleted->setEnabled(okToModify);
+    markAsFlagged->setEnabled(okToModify);
+    markAsJunk->setEnabled(okToModify);
+    markAsNotJunk->setEnabled(okToModify);
+
+    bool isRead    = isValid,
+         isDeleted = isValid,
+         isFlagged = isValid,
+         isJunk    = isValid,
+         isNotJunk = isValid;
+    Q_FOREACH (const QModelIndex &i, indexes) {
+#define UPDATE_STATE(PROP) \
+        if (is##PROP && !i.data(Imap::Mailbox::RoleMessageIsMarked##PROP).toBool()) \
+            is##PROP = false;
+        UPDATE_STATE(Read)
+        UPDATE_STATE(Deleted)
+        UPDATE_STATE(Flagged)
+        UPDATE_STATE(Junk)
+        UPDATE_STATE(NotJunk)
+#undef UPDATE_STATE
+    }
+    markAsRead->setChecked(isRead);
+    markAsDeleted->setChecked(isDeleted);
+    markAsFlagged->setChecked(isFlagged);
+    markAsJunk->setChecked(isJunk && !isNotJunk);
+    markAsNotJunk->setChecked(isNotJunk && !isJunk);
 }
 
 void MainWindow::updateActionsOnlineOffline(bool online)
@@ -1163,91 +1658,148 @@ void MainWindow::updateActionsOnlineOffline(bool online)
     createChildMailbox->setEnabled(online);
     createTopMailbox->setEnabled(online);
     deleteCurrentMailbox->setEnabled(online);
-    markAsDeleted->setEnabled(online);
-    markAsRead->setEnabled(online);
+    m_actionMarkMailboxAsRead->setEnabled(online);
+    updateMessageFlags();
     showImapCapabilities->setEnabled(online);
     if (!online) {
+        m_replyGuess->setEnabled(false);
         m_replyPrivate->setEnabled(false);
         m_replyAll->setEnabled(false);
+        m_replyAllButMe->setEnabled(false);
         m_replyList->setEnabled(false);
+        m_forwardAsAttachment->setEnabled(false);
     }
 }
 
 void MainWindow::slotUpdateMessageActions()
 {
     Composer::RecipientList dummy;
-    m_replyPrivate->setEnabled(Composer::Util::replyRecipientList(Composer::REPLY_PRIVATE, msgView->currentMessage(), dummy));
-    m_replyAll->setEnabled(Composer::Util::replyRecipientList(Composer::REPLY_ALL, msgView->currentMessage(), dummy));
-    m_replyList->setEnabled(Composer::Util::replyRecipientList(Composer::REPLY_LIST, msgView->currentMessage(), dummy));
+    m_replyPrivate->setEnabled(Composer::Util::replyRecipientList(Composer::REPLY_PRIVATE, senderIdentitiesModel(),
+                                                                  m_messageWidget->messageView->currentMessage(), dummy));
+    m_replyAllButMe->setEnabled(Composer::Util::replyRecipientList(Composer::REPLY_ALL_BUT_ME, senderIdentitiesModel(),
+                                                                   m_messageWidget->messageView->currentMessage(), dummy));
+    m_replyAll->setEnabled(Composer::Util::replyRecipientList(Composer::REPLY_ALL, senderIdentitiesModel(),
+                                                              m_messageWidget->messageView->currentMessage(), dummy));
+    m_replyList->setEnabled(Composer::Util::replyRecipientList(Composer::REPLY_LIST, senderIdentitiesModel(),
+                                                               m_messageWidget->messageView->currentMessage(), dummy));
+    m_replyGuess->setEnabled(m_replyPrivate->isEnabled() || m_replyAllButMe->isEnabled()
+                             || m_replyAll->isEnabled() || m_replyList->isEnabled());
+
+    // Check the default reply mode
+    // I suspect this is not going to work for everybody. Suggestions welcome...
     if (m_replyList->isEnabled()) {
         m_replyButton->setDefaultAction(m_replyList);
+    } else if (m_replyAllButMe->isEnabled()) {
+        m_replyButton->setDefaultAction(m_replyAllButMe);
     } else {
         m_replyButton->setDefaultAction(m_replyPrivate);
     }
+
+    m_forwardAsAttachment->setEnabled(m_messageWidget->messageView->currentMessage().isValid());
 }
 
 void MainWindow::scrollMessageUp()
 {
-    area->ensureVisible(0, 0, 0, 0);
+    m_messageWidget->area->ensureVisible(0, 0, 0, 0);
 }
 
 void MainWindow::slotReplyTo()
 {
-    msgView->reply(this, Composer::REPLY_PRIVATE);
+    m_messageWidget->messageView->reply(this, Composer::REPLY_PRIVATE);
 }
 
 void MainWindow::slotReplyAll()
 {
-    msgView->reply(this, Composer::REPLY_ALL);
+    m_messageWidget->messageView->reply(this, Composer::REPLY_ALL);
+}
+
+void MainWindow::slotReplyAllButMe()
+{
+    m_messageWidget->messageView->reply(this, Composer::REPLY_ALL_BUT_ME);
 }
 
 void MainWindow::slotReplyList()
 {
-    msgView->reply(this, Composer::REPLY_LIST);
+    m_messageWidget->messageView->reply(this, Composer::REPLY_LIST);
+}
+
+void MainWindow::slotReplyGuess()
+{
+    if (m_replyButton->defaultAction() == m_replyAllButMe) {
+        slotReplyAllButMe();
+    } else if (m_replyButton->defaultAction() == m_replyAll) {
+        slotReplyAll();
+    } else if (m_replyButton->defaultAction() == m_replyList) {
+        slotReplyList();
+    } else {
+        slotReplyTo();
+    }
+}
+
+void MainWindow::slotForwardAsAttachment()
+{
+    m_messageWidget->messageView->forward(this, Composer::ForwardMode::FORWARD_AS_ATTACHMENT);
 }
 
 void MainWindow::slotComposeMailUrl(const QUrl &url)
 {
-    Q_ASSERT(url.scheme().toLower() == QLatin1String("mailto"));
-
-    QStringList list = url.path().split(QLatin1Char('@'));
-    if (list.size() != 2)
-        return;
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    Imap::Message::MailAddress addr(url.queryItemValue(QLatin1String("X-Trojita-DisplayName")), QString(),
-                                    list[0], list[1]);
-#else
-    QUrlQuery q(url);
-    Imap::Message::MailAddress addr(q.queryItemValue(QLatin1String("X-Trojita-DisplayName")), QString(),
-                                    list[0], list[1]);
-#endif
-    RecipientsType recipients;
-    recipients << qMakePair<Composer::RecipientKind,QString>(Composer::ADDRESS_TO, addr.asPrettyString());
-    invokeComposeDialog(QString(), QString(), recipients);
+    ComposeWidget::warnIfMsaNotConfigured(ComposeWidget::createFromUrl(this, url), this);
 }
 
-ComposeWidget *MainWindow::invokeComposeDialog(const QString &subject, const QString &body,
-                                               const RecipientsType &recipients, const QList<QByteArray> &inReplyTo,
-                                               const QList<QByteArray> &references, const QModelIndex &replyingToMessage)
+void MainWindow::slotManageContact(const QUrl &url)
 {
-    QSettings s;
-    ComposeWidget *w = new ComposeWidget(this);
+    Imap::Message::MailAddress addr;
+    if (!Imap::Message::MailAddress::fromUrl(addr, url, QStringLiteral("x-trojita-manage-contact")))
+        return;
 
-    // Trim the References header as per RFC 5537
-    QList<QByteArray> trimmedReferences = references;
-    int referencesSize = QByteArray("References: ").size();
-    const int lineOverhead = 3; // one for the " " prefix, two for the \r\n suffix
-    Q_FOREACH(const QByteArray &item, references)
-        referencesSize += item.size() + lineOverhead;
-    // The magic numbers are from RFC 5537
-    while (referencesSize >= 998 && trimmedReferences.size() > 3) {
-        referencesSize -= trimmedReferences.takeAt(1).size() + lineOverhead;
+    Plugins::AddressbookPlugin *addressbook = pluginManager()->addressbook();
+    if (!addressbook)
+        return;
+
+    addressbook->openContactWindow(addr.mailbox + QLatin1Char('@') + addr.host, addr.name);
+}
+
+void MainWindow::invokeContactEditor()
+{
+    Plugins::AddressbookPlugin *addressbook = pluginManager()->addressbook();
+    if (!addressbook)
+        return;
+
+    addressbook->openAddressbookWindow();
+}
+
+/** @short Create an MSAFactory as per the settings */
+MSA::MSAFactory *MainWindow::msaFactory()
+{
+    using namespace Common;
+    QString method = m_settings->value(SettingsNames::msaMethodKey).toString();
+    MSA::MSAFactory *msaFactory = 0;
+    if (method == SettingsNames::methodSMTP || method == SettingsNames::methodSSMTP) {
+        msaFactory = new MSA::SMTPFactory(m_settings->value(SettingsNames::smtpHostKey).toString(),
+                                          m_settings->value(SettingsNames::smtpPortKey).toInt(),
+                                          (method == SettingsNames::methodSSMTP),
+                                          (method == SettingsNames::methodSMTP)
+                                          && m_settings->value(SettingsNames::smtpStartTlsKey).toBool(),
+                                          m_settings->value(SettingsNames::smtpAuthKey).toBool(),
+                                          m_settings->value(SettingsNames::smtpAuthReuseImapCredsKey, false).toBool() ?
+                                              m_settings->value(SettingsNames::imapUserKey).toString() :
+                                              m_settings->value(SettingsNames::smtpUserKey).toString());
+    } else if (method == SettingsNames::methodSENDMAIL) {
+        QStringList args = m_settings->value(SettingsNames::sendmailKey, SettingsNames::sendmailDefaultCmd).toString().split(QLatin1Char(' '));
+        if (args.isEmpty()) {
+            return 0;
+        }
+        QString appName = args.takeFirst();
+        msaFactory = new MSA::SendmailFactory(appName, args);
+    } else if (method == SettingsNames::methodImapSendmail) {
+        if (!imapModel()->capabilities().contains(QStringLiteral("X-DRAFT-I01-SENDMAIL"))) {
+            return 0;
+        }
+        msaFactory = new MSA::ImapSubmitFactory(qobject_cast<Imap::Mailbox::Model*>(imapAccess()->imapModel()));
+    } else {
+        return 0;
     }
-
-    w->setData(recipients, subject, body, inReplyTo, trimmedReferences, replyingToMessage);
-    Util::centerWidgetOnScreen(w);
-    w->show();
-    return w;
+    return msaFactory;
 }
 
 void MainWindow::slotMailboxDeleteFailed(const QString &mailbox, const QString &msg)
@@ -1262,48 +1814,92 @@ void MainWindow::slotMailboxCreateFailed(const QString &mailbox, const QString &
                          tr("Creating mailbox \"%1\" failed with the following message:\n%2").arg(mailbox, msg));
 }
 
-void MainWindow::showConnectionStatus(QObject *parser, Imap::ConnectionState state)
+void MainWindow::slotMailboxSyncFailed(const QString &mailbox, const QString &msg)
 {
-    Q_UNUSED(parser);
-    using namespace Imap;
-    QString message = connectionStateToString(state);
-    enum { DURATION = 10000 };
-    bool transient = false;
+    QMessageBox::warning(this, tr("Can't open mailbox"),
+                         tr("Opening mailbox \"%1\" failed with the following message:\n%2").arg(mailbox, msg));
+}
 
-    switch (state) {
-    case CONN_STATE_AUTHENTICATED:
-    case CONN_STATE_SELECTED:
-        transient = true;
-        break;
-    default:
-        // only the stuff above is transient
-        break;
+void MainWindow::slotMailboxChanged(const QModelIndex &mailbox)
+{
+    using namespace Imap::Mailbox;
+    QString mailboxName = mailbox.data(RoleMailboxName).toString();
+    bool isSentMailbox = mailbox.isValid() && !mailboxName.isEmpty() &&
+            m_settings->value(Common::SettingsNames::composerSaveToImapKey).toBool() &&
+            mailboxName == m_settings->value(Common::SettingsNames::composerImapSentKey).toString();
+    QTreeView *tree = msgListWidget->tree;
+
+    // Automatically trigger visibility of the TO and FROM columns
+    if (isSentMailbox) {
+        if (tree->isColumnHidden(MsgListModel::TO) && !tree->isColumnHidden(MsgListModel::FROM)) {
+            tree->hideColumn(MsgListModel::FROM);
+            tree->showColumn(MsgListModel::TO);
+        }
+    } else {
+        if (tree->isColumnHidden(MsgListModel::FROM) && !tree->isColumnHidden(MsgListModel::TO)) {
+            tree->hideColumn(MsgListModel::TO);
+            tree->showColumn(MsgListModel::FROM);
+        }
     }
-    statusBar()->showMessage(message, transient ? DURATION : 0);
+
+    updateMessageFlags();
+    slotScrollToUnseenMessage();
+}
+
+void MainWindow::showConnectionStatus(uint parserId, Imap::ConnectionState state)
+{
+    Q_UNUSED(parserId);
+    static Imap::ConnectionState previousState = Imap::ConnectionState::CONN_STATE_NONE;
+    QString message = connectionStateToString(state);
+
+    if (state == Imap::ConnectionState::CONN_STATE_SELECTED && previousState >= Imap::ConnectionState::CONN_STATE_SELECTED) {
+        // prevent excessive popups when we "reset the state" to something which is shown quite often
+        showStatusMessage(QString());
+    } else {
+        showStatusMessage(message);
+    }
+    previousState = state;
 }
 
 void MainWindow::slotShowLinkTarget(const QString &link)
 {
-    if (link.isEmpty())
-        statusBar()->clearMessage();
-    else
-        statusBar()->showMessage(tr("Link target: %1").arg(link));
+    if (link.isEmpty()) {
+        QToolTip::hideText();
+    } else {
+        QToolTip::showText(QCursor::pos(), tr("Link target: %1").arg(UiUtils::Formatting::htmlEscaped(link)));
+    }
 }
 
 void MainWindow::slotShowAboutTrojita()
 {
-    QMessageBox::about(this, trUtf8("About Trojitá"),
-                       trUtf8("<p>This is <b>Trojitá</b>, a fast Qt IMAP e-mail client</p>"
-                              "<p>Copyright &copy; 2006 - 2013 Jan Kundrát &lt;jkt@flaska.net&gt; and "
-                              "<a href=\"http://quickgit.kde.org/?p=trojita.git&amp;a=blob&amp;f=LICENSE\">others</a></p>"
-                              "<p>More information at <a href=\"http://trojita.flaska.net/\">http://trojita.flaska.net/</a></p>"
-                              "<p>You are using version %1.</p>").arg(
-                           QApplication::applicationVersion()));
+    Ui::AboutDialog ui;
+    QDialog *widget = new QDialog(this);
+    widget->setAttribute(Qt::WA_DeleteOnClose);
+    ui.setupUi(widget);
+    ui.versionLabel->setText(Common::Application::version);
+    QStringList copyright;
+    {
+        // Find the names of the authors and remove date codes from there
+        QFile license(QStringLiteral(":/LICENSE"));
+        license.open(QFile::ReadOnly);
+        const QString prefix(QStringLiteral("Copyright (C) "));
+        Q_FOREACH(const QString &line, QString::fromUtf8(license.readAll()).split(QLatin1Char('\n'))) {
+            if (line.startsWith(prefix)) {
+                const int pos = prefix.size();
+                copyright << QChar(0xa9 /* COPYRIGHT SIGN */) + QLatin1Char(' ') +
+                             line.mid(pos).replace(QRegExp(QLatin1String("(\\d) - (\\d)")),
+                                                   QLatin1String("\\1") + QChar(0x2014 /* EM DASH */) + QLatin1String("\\2"));
+            }
+        }
+    }
+    ui.credits->setTextFormat(Qt::PlainText);
+    ui.credits->setText(copyright.join(QStringLiteral("\n")));
+    widget->show();
 }
 
 void MainWindow::slotDonateToTrojita()
 {
-    QDesktopServices::openUrl(QString(QLatin1String("http://sourceforge.net/donate/index.php?group_id=339456")));
+    QDesktopServices::openUrl(QStringLiteral("https://sourceforge.net/p/trojita/donate/"));
 }
 
 void MainWindow::slotSaveCurrentMessageBody()
@@ -1314,40 +1910,64 @@ void MainWindow::slotSaveCurrentMessageBody()
             continue;
         if (! item.data(Imap::Mailbox::RoleMessageUid).isValid())
             continue;
-        QModelIndex messageIndex;
-        Imap::Mailbox::TreeItemMessage *message = dynamic_cast<Imap::Mailbox::TreeItemMessage *>(
-                    Imap::Mailbox::Model::realTreeItem(item, 0, &messageIndex)
-                );
-        Q_ASSERT(message);
+
+        QModelIndex messageIndex = Imap::deproxifiedIndex(item);
 
         Imap::Network::MsgPartNetAccessManager *netAccess = new Imap::Network::MsgPartNetAccessManager(this);
-        netAccess->setModelMessage(message->toIndex(model));
+        netAccess->setModelMessage(messageIndex);
         Imap::Network::FileDownloadManager *fileDownloadManager =
-            new Imap::Network::FileDownloadManager(this, netAccess, messageIndex.child(0, Imap::Mailbox::TreeItem::OFFSET_HEADER));
-        // FIXME: change from "header" into "whole message"
-        connect(fileDownloadManager, SIGNAL(succeeded()), fileDownloadManager, SLOT(deleteLater()));
-        connect(fileDownloadManager, SIGNAL(transferError(QString)), fileDownloadManager, SLOT(deleteLater()));
-        connect(fileDownloadManager, SIGNAL(fileNameRequested(QString *)),
-                this, SLOT(slotDownloadMessageFileNameRequested(QString *)));
-        connect(fileDownloadManager, SIGNAL(transferError(QString)),
-                this, SLOT(slotDownloadMessageTransferError(QString)));
-        connect(fileDownloadManager, SIGNAL(destroyed()), netAccess, SLOT(deleteLater()));
-        fileDownloadManager->slotDownloadNow();
+            new Imap::Network::FileDownloadManager(this, netAccess, messageIndex);
+        connect(fileDownloadManager, &Imap::Network::FileDownloadManager::succeeded, fileDownloadManager, &QObject::deleteLater);
+        connect(fileDownloadManager, &Imap::Network::FileDownloadManager::transferError, fileDownloadManager, &QObject::deleteLater);
+        connect(fileDownloadManager, &Imap::Network::FileDownloadManager::fileNameRequested,
+                this, &MainWindow::slotDownloadMessageFileNameRequested);
+        connect(fileDownloadManager, &Imap::Network::FileDownloadManager::transferError,
+                this, &MainWindow::slotDownloadTransferError);
+        connect(fileDownloadManager, &QObject::destroyed, netAccess, &QObject::deleteLater);
+        fileDownloadManager->downloadMessage();
     }
 }
 
-void MainWindow::slotDownloadMessageTransferError(const QString &errorString)
+void MainWindow::slotDownloadTransferError(const QString &errorString)
 {
-    QMessageBox::critical(this, tr("Can't save message"),
-                          tr("Unable to save the attachment. Error:\n%1").arg(errorString));
+    QMessageBox::critical(this, tr("Can't save into file"),
+                          tr("Unable to save into file. Error:\n%1").arg(errorString));
 }
 
 void MainWindow::slotDownloadMessageFileNameRequested(QString *fileName)
 {
-    *fileName = QFileDialog::getSaveFileName(this, tr("Save Message"),
-                *fileName, QString(),
-                0, QFileDialog::HideNameFilterDetails
-                                            );
+    *fileName = QFileDialog::getSaveFileName(this, tr("Save Message"), *fileName, QString(), 0,
+                                             QFileDialog::HideNameFilterDetails);
+}
+
+void MainWindow::slotViewMsgSource()
+{
+    Q_FOREACH(const QModelIndex &item, msgListWidget->tree->selectionModel()->selectedIndexes()) {
+        Q_ASSERT(item.isValid());
+        if (item.column() != 0)
+            continue;
+        if (! item.data(Imap::Mailbox::RoleMessageUid).isValid())
+            continue;
+        auto w = messageSourceWidget(item);
+        //: Translators: %1 is the UID of a message (a number) and %2 is the name of a mailbox.
+        w->setWindowTitle(tr("Message source of UID %1 in %2").arg(
+                              QString::number(item.data(Imap::Mailbox::RoleMessageUid).toUInt()),
+                              Imap::deproxifiedIndex(item).parent().parent().data(Imap::Mailbox::RoleMailboxName).toString()
+                              ));
+        w->show();
+    }
+}
+
+QWidget *MainWindow::messageSourceWidget(const QModelIndex &message)
+{
+    QModelIndex messageIndex = Imap::deproxifiedIndex(message);
+    MessageSourceWidget *sourceWidget = new MessageSourceWidget(0, messageIndex);
+    sourceWidget->setAttribute(Qt::WA_DeleteOnClose);
+    QAction *close = new QAction(UiUtils::loadIcon(QStringLiteral("window-close")), tr("Close"), sourceWidget);
+    sourceWidget->addAction(close);
+    close->setShortcut(tr("Ctrl+W"));
+    connect(close, &QAction::triggered, sourceWidget, &QWidget::close);
+    return sourceWidget;
 }
 
 void MainWindow::slotViewMsgHeaders()
@@ -1358,25 +1978,15 @@ void MainWindow::slotViewMsgHeaders()
             continue;
         if (! item.data(Imap::Mailbox::RoleMessageUid).isValid())
             continue;
-        QModelIndex messageIndex;
-        Imap::Mailbox::Model::realTreeItem(item, 0, &messageIndex);
+        QModelIndex messageIndex = Imap::deproxifiedIndex(item);
 
-        Imap::Network::MsgPartNetAccessManager *netAccess = new Imap::Network::MsgPartNetAccessManager(this);
-        netAccess->setModelMessage(messageIndex);
-
-        SimplePartWidget *headers = new SimplePartWidget(0, netAccess,
-                                        messageIndex.model()->index(0, Imap::Mailbox::TreeItem::OFFSET_HEADER, messageIndex));
-        headers->setAttribute(Qt::WA_DeleteOnClose);
-        connect(headers, SIGNAL(destroyed()), netAccess, SLOT(deleteLater()));
-        QAction *close = new QAction(loadIcon(QLatin1String("window-close")), tr("Close"), headers);
-        headers->addAction(close);
+        auto widget = new MessageHeadersWidget(nullptr, messageIndex);
+        widget->setAttribute(Qt::WA_DeleteOnClose);
+        QAction *close = new QAction(UiUtils::loadIcon(QStringLiteral("window-close")), tr("Close"), widget);
+        widget->addAction(close);
         close->setShortcut(tr("Ctrl+W"));
-        connect(close, SIGNAL(triggered()), headers, SLOT(close()));
-        headers->setWindowTitle(tr("Message headers of UID %1 in %2").arg(
-                                    QString::number(messageIndex.data(Imap::Mailbox::RoleMessageUid).toUInt()),
-                                    messageIndex.parent().parent().data(Imap::Mailbox::RoleMailboxName).toString()
-                                    ));
-        headers->show();
+        connect(close, &QAction::triggered, widget, &QWidget::close);
+        widget->show();
     }
 }
 
@@ -1411,25 +2021,23 @@ void MainWindow::slotSubscribeCurrentMailbox()
 
     QString mailbox = index.data(Imap::Mailbox::RoleMailboxName).toString();
     if (m_actionSubscribeMailbox->isChecked()) {
-        model->subscribeMailbox(mailbox);
+        imapModel()->subscribeMailbox(mailbox);
     } else {
-        model->unsubscribeMailbox(mailbox);
+        imapModel()->unsubscribeMailbox(mailbox);
     }
 }
 
 void MainWindow::slotShowOnlySubscribed()
 {
-    QSettings().setValue(Common::SettingsNames::guiMailboxListShowOnlySubscribed, m_actionShowOnlySubscribed->isChecked());
     if (m_actionShowOnlySubscribed->isEnabled()) {
+        m_settings->setValue(Common::SettingsNames::guiMailboxListShowOnlySubscribed, m_actionShowOnlySubscribed->isChecked());
         prettyMboxModel->setShowOnlySubscribed(m_actionShowOnlySubscribed->isChecked());
     }
 }
 
-void MainWindow::slotScrollToUnseenMessage(const QModelIndex &mailbox, const QModelIndex &message)
+void MainWindow::slotScrollToUnseenMessage()
 {
     // Now this is much, much more reliable than messing around with finding out an "interesting message"...
-    Q_UNUSED(mailbox);
-    Q_UNUSED(message);
     if (!m_actionSortNone->isChecked() && !m_actionSortThreading->isChecked()) {
         // we're using some funky sorting, better don't scroll anywhere
     }
@@ -1440,13 +2048,21 @@ void MainWindow::slotScrollToUnseenMessage(const QModelIndex &mailbox, const QMo
     }
 }
 
+void MainWindow::slotScrollToCurrent()
+{
+    // TODO: begs for lambda
+    if (QScrollBar *vs = msgListWidget->tree->verticalScrollBar()) {
+        vs->setValue(vs->maximum() - vs->value()); // implies vs->minimum() == 0
+    }
+}
+
 void MainWindow::slotThreadMsgList()
 {
     // We want to save user's preferences and not override them with "threading disabled" when the server
     // doesn't report them, like in initial greetings. That's why we have to check for isEnabled() here.
     const bool useThreading = actionThreadMsgList->isChecked();
 
-    // Switching betweeb threaded/unthreaded view shall resert the sorting criteria. The goal is to make
+    // Switching between threaded/unthreaded view shall reset the sorting criteria. The goal is to make
     // sorting rather seldomly used as people shall instead use proper threading.
     if (useThreading) {
         m_actionSortThreading->setEnabled(true);
@@ -1464,20 +2080,20 @@ void MainWindow::slotThreadMsgList()
 
     if (useThreading && actionThreadMsgList->isEnabled()) {
         msgListWidget->tree->setRootIsDecorated(true);
-        threadingMsgListModel->setUserWantsThreading(true);
+        qobject_cast<Imap::Mailbox::ThreadingMsgListModel *>(m_imapAccess->threadingMsgListModel())->setUserWantsThreading(true);
     } else {
         msgListWidget->tree->setRootIsDecorated(false);
-        threadingMsgListModel->setUserWantsThreading(false);
+        qobject_cast<Imap::Mailbox::ThreadingMsgListModel *>(m_imapAccess->threadingMsgListModel())->setUserWantsThreading(false);
     }
-    QSettings().setValue(Common::SettingsNames::guiMsgListShowThreading, QVariant(useThreading));
+    m_settings->setValue(Common::SettingsNames::guiMsgListShowThreading, QVariant(useThreading));
 
     if (currentItem.isValid()) {
         msgListWidget->tree->scrollTo(currentItem);
     } else {
-        // If we cannot determine current item, at least scroll to a predictable place. Without this, the view
+        // If we cannot determine the current item, at least scroll to a predictable place. Without this, the view
         // would jump to "weird" places, probably due to some heuristics about trying to show "roughly the same"
         // objects as what was visible before the reshuffling.
-        msgListWidget->tree->scrollToBottom();
+        slotScrollToUnseenMessage();
     }
 }
 
@@ -1520,6 +2136,8 @@ void MainWindow::slotSortingConfirmed(int column, Qt::SortOrder order)
 
     switch (column) {
     case MsgListModel::SEEN:
+    case MsgListModel::FLAGGED:
+    case MsgListModel::ATTACHMENT:
     case MsgListModel::COLUMN_COUNT:
     case MsgListModel::BCC:
     case -1:
@@ -1566,6 +2184,8 @@ void MainWindow::slotSearchRequested(const QStringList &searchConditions)
         // right now, searching and threading doesn't play well together at all
         actionThreadMsgList->trigger();
     }
+    Imap::Mailbox::ThreadingMsgListModel * threadingMsgListModel =
+            qobject_cast<Imap::Mailbox::ThreadingMsgListModel *>(m_imapAccess->threadingMsgListModel());
     threadingMsgListModel->setUserSearchingSortingPreference(searchConditions, threadingMsgListModel->currentSortCriterium(),
                                                              threadingMsgListModel->currentSortOrder());
 }
@@ -1574,29 +2194,26 @@ void MainWindow::slotHideRead()
 {
     const bool hideRead = actionHideRead->isChecked();
     prettyMsgListModel->setHideRead(hideRead);
-    QSettings().setValue(Common::SettingsNames::guiMsgListHideRead, QVariant(hideRead));
+    m_settings->setValue(Common::SettingsNames::guiMsgListHideRead, QVariant(hideRead));
 }
 
 void MainWindow::slotCapabilitiesUpdated(const QStringList &capabilities)
 {
-    if (capabilities.contains(QLatin1String("SORT"))) {
+    msgListWidget->tree->header()->viewport()->removeEventFilter(this);
+    if (capabilities.contains(QStringLiteral("SORT"))) {
         m_actionSortByDate->actionGroup()->setEnabled(true);
     } else {
         m_actionSortByDate->actionGroup()->setEnabled(false);
+        msgListWidget->tree->header()->viewport()->installEventFilter(this);
     }
 
-    msgListWidget->setFuzzySearchSupported(capabilities.contains(QLatin1String("SEARCH=FUZZY")));
+    msgListWidget->setFuzzySearchSupported(capabilities.contains(QStringLiteral("SEARCH=FUZZY")));
 
-    m_actionShowOnlySubscribed->setEnabled(capabilities.contains(QLatin1String("LIST-EXTENDED")));
+    m_actionShowOnlySubscribed->setEnabled(capabilities.contains(QStringLiteral("LIST-EXTENDED")));
     m_actionShowOnlySubscribed->setChecked(m_actionShowOnlySubscribed->isEnabled() &&
-                                           QSettings().value(
+                                           m_settings->value(
                                                Common::SettingsNames::guiMailboxListShowOnlySubscribed, false).toBool());
     m_actionSubscribeMailbox->setEnabled(m_actionShowOnlySubscribed->isEnabled());
-
-    m_supportsCatenate = capabilities.contains(QLatin1String("CATENATE"));
-    m_supportsGenUrlAuth = capabilities.contains(QLatin1String("URLAUTH"));
-    m_supportsImapSubmission = capabilities.contains(QLatin1String("UIDPLUS")) &&
-            capabilities.contains(QLatin1String("X-DRAFT-I01-SENDMAIL"));
 
     const QStringList supportedCapabilities = Imap::Mailbox::ThreadingMsgListModel::supportedCapabilities();
     Q_FOREACH(const QString &capability, capabilities) {
@@ -1613,21 +2230,16 @@ void MainWindow::slotCapabilitiesUpdated(const QStringList &capabilities)
 void MainWindow::slotShowImapInfo()
 {
     QString caps;
-    Q_FOREACH(const QString &cap, model->capabilities()) {
+    Q_FOREACH(const QString &cap, imapModel()->capabilities()) {
         caps += tr("<li>%1</li>\n").arg(cap);
     }
 
     QString idString;
-    if (!model->serverId().isEmpty() && model->capabilities().contains(QLatin1String("ID"))) {
-        QMap<QByteArray,QByteArray> serverId = model->serverId();
+    if (!imapModel()->serverId().isEmpty() && imapModel()->capabilities().contains(QStringLiteral("ID"))) {
+        QMap<QByteArray,QByteArray> serverId = imapModel()->serverId();
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
 #define IMAP_ID_FIELD(Var, Name) bool has_##Var = serverId.contains(Name); \
     QString Var = has_##Var ? QString::fromUtf8(serverId[Name]).toHtmlEscaped() : tr("Unknown");
-#else
-#define IMAP_ID_FIELD(Var, Name) bool has_##Var = serverId.contains(Name); \
-    QString Var = has_##Var ? Qt::escape(QString::fromAscii(serverId[Name])) : tr("Unknown");
-#endif
         IMAP_ID_FIELD(serverName, "name");
         IMAP_ID_FIELD(serverVersion, "version");
         IMAP_ID_FIELD(os, "os");
@@ -1652,9 +2264,9 @@ void MainWindow::slotShowImapInfo()
             }
             if (has_os) {
                 if (has_osVersion)
-                    idString += tr(" on %1 %2").arg(os, osVersion);
+                    idString += tr(" on %1 %2", "%1 is the operating system of an IMAP server and %2 is its version.").arg(os, osVersion);
                 else
-                    idString += tr(" on %1").arg(os);
+                    idString += tr(" on %1", "%1 is the operationg system of an IMAP server.").arg(os);
             }
             idString += tr("</p>");
         } else {
@@ -1662,11 +2274,7 @@ void MainWindow::slotShowImapInfo()
         }
         QString fullId;
         for (QMap<QByteArray,QByteArray>::const_iterator it = serverId.constBegin(); it != serverId.constEnd(); ++it) {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
             fullId += tr("<li>%1: %2</li>").arg(QString::fromUtf8(it.key()).toHtmlEscaped(), QString::fromUtf8(it.value()).toHtmlEscaped());
-#else
-            fullId += tr("<li>%1: %2</li>").arg(Qt::escape(QString::fromAscii(it.key())), Qt::escape(QString::fromAscii(it.value())));
-#endif
         }
         idString += tr("<ul>%1</ul>").arg(fullId);
     } else {
@@ -1686,75 +2294,341 @@ QSize MainWindow::sizeHint() const
 
 void MainWindow::slotUpdateWindowTitle()
 {
-    QModelIndex mailbox = msgListModel->currentMailbox();
+    QModelIndex mailbox = qobject_cast<Imap::Mailbox::MsgListModel *>(m_imapAccess->msgListModel())->currentMailbox();
+    QString profileName = QString::fromUtf8(qgetenv("TROJITA_PROFILE"));
+    if (!profileName.isEmpty())
+        profileName = QLatin1String(" [") + profileName + QLatin1Char(']');
     if (mailbox.isValid()) {
         if (mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toInt()) {
-            setWindowTitle(trUtf8("%1 — %2 unread — Trojitá")
-                           .arg(mailbox.data(Imap::Mailbox::RoleShortMailboxName).toString(),
-                                mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toString()));
+            setWindowTitle(trUtf8("%1 - %n unread - Trojitá", 0, mailbox.data(Imap::Mailbox::RoleUnreadMessageCount).toInt())
+                           .arg(mailbox.data(Imap::Mailbox::RoleShortMailboxName).toString()) + profileName);
         } else {
-            setWindowTitle(trUtf8("%1 — Trojitá").arg(mailbox.data(Imap::Mailbox::RoleShortMailboxName).toString()));
+            setWindowTitle(trUtf8("%1 - Trojitá").arg(mailbox.data(Imap::Mailbox::RoleShortMailboxName).toString()) + profileName);
         }
     } else {
-        setWindowTitle(trUtf8("Trojitá"));
+        setWindowTitle(trUtf8("Trojitá") + profileName);
     }
 }
 
 void MainWindow::slotLayoutCompact()
 {
-    m_mainVSplitter->addWidget(area);
-    QSettings().setValue(Common::SettingsNames::guiMainWindowLayout, Common::SettingsNames::guiMainWindowLayoutCompact);
-    setMinimumWidth(800);
+    saveSizesAndState();
+    if (!m_mainHSplitter) {
+        m_mainHSplitter = new QSplitter();
+        connect(m_mainHSplitter.data(), &QSplitter::splitterMoved, m_delayedStateSaving, static_cast<void (QTimer::*)()>(&QTimer::start));
+        connect(m_mainHSplitter.data(), &QSplitter::splitterMoved, this, &MainWindow::possiblyLoadMessageOnSplittersChanged);
+    }
+    if (!m_mainVSplitter) {
+        m_mainVSplitter = new QSplitter();
+        m_mainVSplitter->setOrientation(Qt::Vertical);
+        connect(m_mainVSplitter.data(), &QSplitter::splitterMoved, m_delayedStateSaving, static_cast<void (QTimer::*)()>(&QTimer::start));
+        connect(m_mainVSplitter.data(), &QSplitter::splitterMoved, this, &MainWindow::possiblyLoadMessageOnSplittersChanged);
+    }
+
+    m_mainVSplitter->addWidget(msgListWidget);
+    m_mainVSplitter->addWidget(m_messageWidget);
+    m_mainHSplitter->addWidget(mboxTree);
+    m_mainHSplitter->addWidget(m_mainVSplitter);
+
+    mboxTree->show();
+    msgListWidget->show();
+    m_messageWidget->show();
+    m_mainVSplitter->show();
+    m_mainHSplitter->show();
+
+    // The mboxTree shall not expand...
+    m_mainHSplitter->setStretchFactor(0, 0);
+    // ...while the msgListTree shall consume all the remaining space
+    m_mainHSplitter->setStretchFactor(1, 1);
+
+    setCentralWidget(m_mainHSplitter);
+
+    delete m_mainStack;
+
+    m_layoutMode = LAYOUT_COMPACT;
+    m_settings->setValue(Common::SettingsNames::guiMainWindowLayout, Common::SettingsNames::guiMainWindowLayoutCompact);
+    applySizesAndState();
 }
 
 void MainWindow::slotLayoutWide()
 {
-    m_mainHSplitter->addWidget(area);
+    saveSizesAndState();
+    if (!m_mainHSplitter) {
+        m_mainHSplitter = new QSplitter();
+        connect(m_mainHSplitter.data(), &QSplitter::splitterMoved, m_delayedStateSaving, static_cast<void (QTimer::*)()>(&QTimer::start));
+        connect(m_mainHSplitter.data(), &QSplitter::splitterMoved, this, &MainWindow::possiblyLoadMessageOnSplittersChanged);
+    }
+
+    m_mainHSplitter->addWidget(mboxTree);
+    m_mainHSplitter->addWidget(msgListWidget);
+    m_mainHSplitter->addWidget(m_messageWidget);
+    msgListWidget->resize(mboxTree->size());
+    m_messageWidget->resize(mboxTree->size());
     m_mainHSplitter->setStretchFactor(0, 0);
     m_mainHSplitter->setStretchFactor(1, 1);
     m_mainHSplitter->setStretchFactor(2, 1);
-    QSettings().setValue(Common::SettingsNames::guiMainWindowLayout, Common::SettingsNames::guiMainWindowLayoutWide);
-    setMinimumWidth(1250);
+
+    mboxTree->show();
+    msgListWidget->show();
+    m_messageWidget->show();
+    m_mainHSplitter->show();
+
+    setCentralWidget(m_mainHSplitter);
+
+    delete m_mainStack;
+    delete m_mainVSplitter;
+
+    m_layoutMode = LAYOUT_WIDE;
+    m_settings->setValue(Common::SettingsNames::guiMainWindowLayout, Common::SettingsNames::guiMainWindowLayoutWide);
+    applySizesAndState();
+}
+
+void MainWindow::slotLayoutOneAtTime()
+{
+    saveSizesAndState();
+    if (m_mainStack)
+        return;
+
+    m_mainStack = new OnePanelAtTimeWidget(this, mboxTree, msgListWidget, m_messageWidget, m_mainToolbar, m_oneAtTimeGoBack);
+    setCentralWidget(m_mainStack);
+
+    delete m_mainHSplitter;
+    delete m_mainVSplitter;
+
+    m_layoutMode = LAYOUT_ONE_AT_TIME;
+    m_settings->setValue(Common::SettingsNames::guiMainWindowLayout, Common::SettingsNames::guiMainWindowLayoutOneAtTime);
+    applySizesAndState();
 }
 
 Imap::Mailbox::Model *MainWindow::imapModel() const
 {
-    return model;
+    return qobject_cast<Imap::Mailbox::Model *>(m_imapAccess->imapModel());
 }
 
-bool MainWindow::isCatenateSupported() const
+void MainWindow::desktopGeometryChanged()
 {
-    return m_supportsCatenate;
+    m_delayedStateSaving->start();
 }
 
-bool MainWindow::isGenUrlAuthSupported() const
+QString MainWindow::settingsKeyForLayout(const LayoutMode layout)
 {
-    return m_supportsGenUrlAuth;
+    switch (layout) {
+    case LAYOUT_COMPACT:
+        return Common::SettingsNames::guiSizesInMainWinWhenCompact;
+    case LAYOUT_WIDE:
+        return Common::SettingsNames::guiSizesInMainWinWhenWide;
+    case LAYOUT_ONE_AT_TIME:
+        return Common::SettingsNames::guiSizesInaMainWinWhenOneAtATime;
+        break;
+    }
+    return QString();
 }
 
-bool MainWindow::isImapSubmissionSupported() const
+void MainWindow::saveSizesAndState()
 {
-    return m_supportsImapSubmission;
+    if (m_skipSavingOfUI)
+        return;
+
+    QRect geometry = qApp->desktop()->availableGeometry(this);
+    QString key = settingsKeyForLayout(m_layoutMode);
+    if (key.isEmpty())
+        return;
+
+    QList<QByteArray> items;
+    items << saveGeometry();
+    items << saveState();
+    items << (m_mainVSplitter ? m_mainVSplitter->saveState() : QByteArray());
+    items << (m_mainHSplitter ? m_mainHSplitter->saveState() : QByteArray());
+    items << msgListWidget->tree->header()->saveState();
+    items << QByteArray::number(msgListWidget->tree->header()->count());
+    for (int i = 0; i < msgListWidget->tree->header()->count(); ++i) {
+        items << QByteArray::number(msgListWidget->tree->header()->sectionSize(i));
+    }
+    // a bool cannot be pushed directly onto a QByteArray so we must convert it to a number
+    items << QByteArray::number(menuBar()->isVisible());
+    QByteArray buf;
+    QDataStream stream(&buf, QIODevice::WriteOnly);
+    stream << items.size();
+    Q_FOREACH(const QByteArray &item, items) {
+        stream << item;
+    }
+
+    m_settings->setValue(key.arg(QString::number(geometry.width())), buf);
 }
 
-/** @short Deal with various obsolete settings */
-void MainWindow::migrateSettings()
+void MainWindow::saveRawStateSetting(bool enabled)
 {
-    using Common::SettingsNames;
-    QSettings s;
+    m_settings->setValue(Common::SettingsNames::guiAllowRawSearch, enabled);
+}
 
-    // Process the obsolete settings about the "cache backend". This has been changed to "offline stuff" after v0.3.
-    if (s.value(SettingsNames::cacheMetadataKey).toString() == SettingsNames::cacheMetadataMemory) {
-        s.setValue(SettingsNames::cacheOfflineKey, SettingsNames::cacheOfflineNone);
-        s.remove(SettingsNames::cacheMetadataKey);
+void MainWindow::applySizesAndState()
+{
+    QRect geometry = qApp->desktop()->availableGeometry(this);
+    QString key = settingsKeyForLayout(m_layoutMode);
+    if (key.isEmpty())
+        return;
 
-        // Also remove the older values used for cache lifetime management which were not used, but set to zero by default
-        s.remove(QLatin1String("offline.sync"));
-        s.remove(QLatin1String("offline.sync.days"));
-        s.remove(QLatin1String("offline.sync.messages"));
+    QByteArray buf = m_settings->value(key.arg(QString::number(geometry.width()))).toByteArray();
+    if (buf.isEmpty())
+        return;
+
+    int size;
+    QDataStream stream(&buf, QIODevice::ReadOnly);
+    stream >> size;
+    QByteArray item;
+
+    // There are slots connected to various events triggered by both restoreGeometry() and restoreState() which would attempt to
+    // save our geometries and state, which is what we must avoid while this method is executing.
+    bool skipSaving = m_skipSavingOfUI;
+    m_skipSavingOfUI = true;
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+
+        // https://bugreports.qt-project.org/browse/QTBUG-30636
+        if (windowState() & Qt::WindowMaximized) {
+            // restoreGeometry(.) restores the wrong size for at least maximized window
+            // However, QWidget does also not notice that the configure request for this
+            // is ignored by many window managers (because users really don't like when windows
+            // drop themselves out of maximization) and has a wrong QWidget::geometry() idea from
+            // the wrong assumption the request would have been hononred.
+            //  So we just "fix" the internal geometry immediately afterwards to prevent
+            // mislayouting
+            // There's atm. no flicker due to this (and because Qt compresses events)
+            // In case it ever occurs, we can frame this in setUpdatesEnabled(false/true)
+            QRect oldGeometry = MainWindow::geometry();
+            restoreGeometry(item);
+            if (windowState() & Qt::WindowMaximized)
+                setGeometry(oldGeometry);
+        } else {
+            restoreGeometry(item);
+            if (windowState() & Qt::WindowMaximized) {
+                // ensure to try setting the proper geometry and have the WM constrain us
+                setGeometry(QApplication::desktop()->availableGeometry());
+            }
+        }
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        restoreState(item);
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        if (m_mainVSplitter) {
+            m_mainVSplitter->restoreState(item);
+        }
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        if (m_mainHSplitter) {
+            m_mainHSplitter->restoreState(item);
+        }
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        msgListWidget->tree->header()->restoreState(item);
+        // got to manually update the state of the actions which control the visibility state
+        msgListWidget->tree->updateActionsAfterRestoredState();
+    }
+
+    connect(msgListWidget->tree->header(), &QHeaderView::sectionCountChanged, msgListWidget->tree, &MsgListView::slotHandleNewColumns);
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        bool ok;
+        int columns = item.toInt(&ok);
+        if (ok) {
+            msgListWidget->tree->header()->setStretchLastSection(false);
+            for (int i = 0; i < columns && size-- && !stream.atEnd(); ++i) {
+                stream >> item;
+                int sectionSize = item.toInt();
+                QHeaderView::ResizeMode resizeMode = msgListWidget->tree->resizeModeForColumn(i);
+                if (sectionSize > 0 && resizeMode == QHeaderView::Interactive) {
+                    // fun fact: user cannot resize by mouse when size <= 0
+                    msgListWidget->tree->setColumnWidth(i, sectionSize);
+                } else {
+                    msgListWidget->tree->setColumnWidth(i, msgListWidget->tree->sizeHintForColumn(i));
+                }
+                msgListWidget->tree->header()->setSectionResizeMode(i, resizeMode);
+            }
+        }
+    }
+
+    if (size-- && !stream.atEnd()) {
+        stream >> item;
+        bool ok;
+        bool visibility = item.toInt(&ok);
+        if (ok) {
+            menuBar()->setVisible(visibility);
+            showMenuBar->setChecked(visibility);
+        }
+    }
+
+    m_skipSavingOfUI = skipSaving;
+}
+
+void MainWindow::resizeEvent(QResizeEvent *)
+{
+    m_delayedStateSaving->start();
+}
+
+/** @short Make sure that the message gets loaded after the splitters have changed their position */
+void MainWindow::possiblyLoadMessageOnSplittersChanged()
+{
+    if (m_messageWidget->isVisible() && !m_messageWidget->size().isEmpty()) {
+        // We do not have to check whether it's a different message; the setMessage() will do this or us
+        // and there are multiple proxy models involved anyway
+        QModelIndex index = msgListWidget->tree->currentIndex();
+        if (index.isValid()) {
+            // OTOH, setting an invalid QModelIndex would happily assert-fail
+            m_messageWidget->messageView->setMessage(msgListWidget->tree->currentIndex());
+        }
     }
 }
 
+Imap::ImapAccess *MainWindow::imapAccess() const
+{
+    return m_imapAccess;
 }
 
+void MainWindow::enableLoggingToDisk()
+{
+    imapLogger->slotSetPersistentLogging(true);
+}
 
+void MainWindow::slotPluginsChanged()
+{
+    Plugins::AddressbookPlugin *addressbook = pluginManager()->addressbook();
+    if (!addressbook || !(addressbook->features() & Plugins::AddressbookPlugin::FeatureAddressbookWindow))
+        m_actionContactEditor->setEnabled(false);
+    else
+        m_actionContactEditor->setEnabled(true);
+}
+
+/** @short Update the default action to make sure that we show a correct status of the network connection */
+void MainWindow::updateNetworkIndication()
+{
+    if (QAction *action = qobject_cast<QAction*>(sender())) {
+        if (action->isChecked()) {
+            m_netToolbarDefaultAction->setIcon(action->icon());
+        }
+    }
+}
+
+void MainWindow::showStatusMessage(const QString &message)
+{
+    networkIndicator->setToolTip(message);
+    if (isActiveWindow())
+        QToolTip::showText(networkIndicator->mapToGlobal(QPoint(0, 0)), message);
+}
+
+void MainWindow::slotMessageModelChanged(QAbstractItemModel *model)
+{
+    mailMimeTree->setModel(model);
+}
+
+}

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -21,15 +21,14 @@
 */
 
 #include "TaskPresentationModel.h"
-#include "GetAnyConnectionTask.h"
+#include "Imap/Tasks/GetAnyConnectionTask.h"
+#include "Imap/Tasks/KeepMailboxOpenTask.h"
+#include "Imap/Tasks/NoopTask.h"
+#include "Imap/Tasks/OpenConnectionTask.h"
+#include "Imap/Tasks/SortTask.h"
+#include "Imap/Tasks/UnSelectTask.h"
 #include "ItemRoles.h"
-#include "KeepMailboxOpenTask.h"
 #include "Model.h"
-#include "NoopTask.h"
-#include "OpenConnectionTask.h"
-#include "QAIM_reset.h"
-#include "SortTask.h"
-#include "UnSelectTask.h"
 
 #ifdef TROJITA_DEBUG_TASK_TREE
 #undef CHECK_TASK_TREE
@@ -176,11 +175,12 @@ QVariant TaskPresentationModel::data(const QModelIndex &index, int role) const
         }
 
         ImapTask *task = static_cast<ImapTask *>(index.internalPointer());
-        if (dynamic_cast<KeepMailboxOpenTask *>(task) || dynamic_cast<GetAnyConnectionTask *>(task) ||
-            dynamic_cast<UnSelectTask *>(task)) {
+        if (dynamic_cast<GetAnyConnectionTask *>(task) || dynamic_cast<UnSelectTask *>(task)) {
             // Internal, auxiliary tasks
-            // FIXME: revisit this for the KeepMailboxOpenTask; it *can* perform a certain activity after all
             return false;
+        } else if (auto keep = dynamic_cast<KeepMailboxOpenTask *>(task)) {
+            // KeepMailboxOpenTask might be actually busy
+            return keep->hasItsOwnActivity();
         } else if (dynamic_cast<SortTask *>(task) && dynamic_cast<SortTask *>(task)->isJustUpdatingNow()) {
             // This is a persistent task responsible for further maintenance of the sort order
             return false;
@@ -195,7 +195,7 @@ QVariant TaskPresentationModel::data(const QModelIndex &index, int role) const
         } else {
             ImapTask *task = static_cast<ImapTask *>(index.internalPointer());
             QString className = QLatin1String(task->metaObject()->className());
-            className.remove(QLatin1String("Imap::Mailbox::"));
+            className.remove(QStringLiteral("Imap::Mailbox::"));
             return tr("%1: %2").arg(className, task->debugIdentification());
         }
     case RoleTaskCompactName: {
@@ -220,7 +220,8 @@ void TaskPresentationModel::slotTaskDestroyed(const ImapTask *const task)
 {
     Q_UNUSED(task);
     CHECK_TASK_TREE
-    RESET_MODEL;
+    beginResetModel();
+    endResetModel();
     CHECK_TASK_TREE
 }
 
@@ -232,7 +233,8 @@ void TaskPresentationModel::slotParserCreated(Parser *parser)
 {
     Q_UNUSED(parser);
     CHECK_TASK_TREE
-    RESET_MODEL;
+    beginResetModel();
+    endResetModel();
     CHECK_TASK_TREE
 }
 
@@ -244,7 +246,8 @@ void TaskPresentationModel::slotParserDeleted(Parser *parser)
 {
     Q_UNUSED(parser);
     CHECK_TASK_TREE
-    RESET_MODEL;
+    beginResetModel();
+    endResetModel();
     CHECK_TASK_TREE
 }
 
@@ -256,7 +259,8 @@ void TaskPresentationModel::slotTaskGotReparented(const ImapTask *const task)
 {
     Q_UNUSED(task);
     CHECK_TASK_TREE
-    RESET_MODEL;
+    beginResetModel();
+    endResetModel();
     CHECK_TASK_TREE
 }
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -20,7 +20,6 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "PrettyMailboxModel.h"
-#include "MailboxModel.h"
 #include "ItemRoles.h"
 
 #ifdef XTUPLE_CONNECT
@@ -29,7 +28,8 @@
 #endif
 
 #include <QFont>
-#include "Gui/IconLoader.h"
+#include "UiUtils/Formatting.h"
+#include "UiUtils/IconLoader.h"
 
 namespace Imap
 {
@@ -37,7 +37,7 @@ namespace Imap
 namespace Mailbox
 {
 
-PrettyMailboxModel::PrettyMailboxModel(QObject *parent, MailboxModel *mailboxModel):
+PrettyMailboxModel::PrettyMailboxModel(QObject *parent, QAbstractItemModel *mailboxModel):
     QSortFilterProxyModel(parent), m_showOnlySubscribed(false)
 {
     setDynamicSortFilter(true);
@@ -60,12 +60,35 @@ QVariant PrettyMailboxModel::data(const QModelIndex &index, int role) const
     {
         QModelIndex translated = mapToSource(index);
         qlonglong unreadCount = translated.data(RoleUnreadMessageCount).toLongLong();
-        if (unreadCount)
+        qlonglong recentCount = translated.data(RoleRecentMessageCount).toLongLong();
+        // The "problem" is that the \Recent and (lack of) \Seen flags are orthogonal states.
+        //
+        // There is no rule saying that a recent message is still unseen (trivial example: an already-read message being copied),
+        // or that an unread message is recent.
+        //
+        // That's not really so much of a problem after the mailbox has been synced because we have all flags for each and every
+        // message, and can therefore easily compute the difference. The problem, however, is that there is no such feature
+        // in the SELECT command (and before you ask, SEARCH requires a selected mailbox, and "selected" is very close to
+        // "synchronized" in Trojita). Trojita tries to satisfy all requests for "message numbers" at once, via the STATUS command
+        // for unselected mailboxes, or through the already-known and cached information in the message flags for the recently
+        // synchronized ones. In theory, it is possible to implement a workaround involving EXAMINE and (E)SEARCH, but even that
+        // has its drawbacks (like the necessary serialization of requests and the requirement for a ton of new code).
+        //
+        // So in short, this is why there's no "(1 + 5)" result with six unread an one recent message.
+        //
+        // We also deliberately put an emphasis on the "unread count", even to an extent where there's no special information
+        // for mailboxes with some recent, but no unread messages.
+        if (recentCount && unreadCount) {
+            return tr("%1 (%2/%3)")
+                   .arg(QSortFilterProxyModel::data(index, RoleShortMailboxName).toString(),
+                        QString::number(recentCount), QString::number(unreadCount));
+        } else if (unreadCount) {
             return tr("%1 (%2)")
                    .arg(QSortFilterProxyModel::data(index, RoleShortMailboxName).toString(),
                         QString::number(unreadCount));
-        else
+        } else {
             return QSortFilterProxyModel::data(index, RoleShortMailboxName);
+        }
     }
     case Qt::FontRole:
     {
@@ -83,27 +106,29 @@ QVariant PrettyMailboxModel::data(const QModelIndex &index, int role) const
     {
         QModelIndex translated = mapToSource(index);
         if (translated.data(RoleMailboxItemsAreLoading).toBool())
-            return Gui::loadIcon(QLatin1String("folder-grey"));
+            return UiUtils::loadIcon(QStringLiteral("folder-grey"));
 #ifdef XTUPLE_CONNECT
         else if (QSettings().value(Common::SettingsNames::xtSyncMailboxList).toStringList().contains(
                      translated.data(RoleMailboxName).toString()))
-            return Gui::loadIcon(QLatin1String("folder-xt-sync.png"));
+            return UiUtils::loadIcon(QLatin1String("folder-xt-sync.png"));
 #endif
         else if (translated.data(RoleMailboxIsINBOX).toBool())
-            return Gui::loadIcon(QLatin1String("mail-folder-inbox"));
+            return UiUtils::loadIcon(QStringLiteral("mail-folder-inbox"));
         else if (translated.data(RoleRecentMessageCount).toInt() > 0)
-            return Gui::loadIcon(QLatin1String("folder-bookmark"));
+            return UiUtils::loadIcon(QStringLiteral("folder-bookmark"));
         else if (translated.data(RoleMailboxIsSelectable).toBool())
-            return Gui::loadIcon(QLatin1String("folder"));
+            return UiUtils::loadIcon(QStringLiteral("folder"));
         else
-            return Gui::loadIcon(QLatin1String("folder-open"));
+            return UiUtils::loadIcon(QStringLiteral("folder-open"));
     }
     case Qt::ToolTipRole:
     {
         QModelIndex translated = mapToSource(index);
-        return tr("<p>%1</p>\n<p>%2 messages<br/>%3 unread</p>")
-               .arg(translated.data(RoleShortMailboxName).toString(), translated.data(RoleTotalMessageCount).toString(),
-                    translated.data(RoleUnreadMessageCount).toString());
+        return QStringLiteral("<p>%1</p>\n<p>%2<br/>%3<br/>%4</p>").arg(
+                    UiUtils::Formatting::htmlEscaped(translated.data(RoleShortMailboxName).toString()),
+                    tr("%n messages", 0, translated.data(RoleTotalMessageCount).toInt()),
+                    tr("%n unread", 0, translated.data(RoleUnreadMessageCount).toInt()),
+                    tr("%n recent", 0, translated.data(RoleRecentMessageCount).toInt()));
     }
     default:
         return QSortFilterProxyModel::data(index, role);
@@ -130,7 +155,7 @@ bool PrettyMailboxModel::filterAcceptsRow(int source_row, const QModelIndex &sou
 
 bool PrettyMailboxModel::hasChildren(const QModelIndex &parent) const
 {
-    return dynamic_cast<const MailboxModel *>(sourceModel())->hasChildren(mapToSource(parent));
+    return sourceModel()->hasChildren(mapToSource(parent));
 }
 
 #ifdef XTUPLE_CONNECT

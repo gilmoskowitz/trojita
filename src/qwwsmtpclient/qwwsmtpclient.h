@@ -56,7 +56,7 @@ public:
     enum State { Disconnected, Connecting, Connected, TLSRequested, Authenticating, Sending, Disconnecting };
     enum Option { NoOptions = 0, StartTlsOption, SizeOption, PipeliningOption, EightBitMimeOption, AuthOption };
     Q_DECLARE_FLAGS ( Options, Option );
-    enum AuthMode { AuthNone, AuthAny, AuthPlain, AuthLogin };
+    enum AuthMode { AuthNone = 0, AuthAny = 1, AuthPlain = 2, AuthLogin = 4 };
     Q_DECLARE_FLAGS ( AuthModes, AuthMode );
     void setLocalName(const QString &ln);
     void setLocalNameEncrypted(const QString &ln);
@@ -65,9 +65,8 @@ public:
     int connectToHostEncrypted(const QString &hostName, quint16 port = 465);
 //     int connectToHost ( const QHostAddress & address, quint16 port = 25);
     int authenticate(const QString &user, const QString &password, AuthMode mode = AuthAny);
-    int sendMail(const QString &from, const QString &to, const QString &content);
-    int sendMail(const QByteArray &from, const QList<QByteArray> &to, const QString &content);
-    int sendMailBurl(const QByteArray &from, const QList<QByteArray> &to, const QString &url);
+    int sendMail(const QByteArray &from, const QList<QByteArray> &to, const QByteArray &content);
+    int sendMailBurl(const QByteArray &from, const QList<QByteArray> &to, const QByteArray &url);
     int rawCommand(const QString &cmd);
     AuthModes supportedAuthModes() const;
     Options options() const;

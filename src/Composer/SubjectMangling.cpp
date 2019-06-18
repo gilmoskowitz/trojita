@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -34,8 +34,8 @@ QString replySubject(const QString &subject)
 {
     // These operations should *not* check for internationalized variants of "Re"; these are evil.
 
-#define RE_PREFIX_RE "(?:(?:Re:\\s?)*)"
-#define RE_PREFIX_ML "(?:(\\[[^\\]]+\\]\\s?)?)"
+#define RE_PREFIX_RE "(?:(?:Re:\\s*)*)"
+#define RE_PREFIX_ML "(?:(\\[[^\\]]+\\]\\s*)?)"
 
     static QRegExp rePrefixMatcher(QLatin1String("^"
                                                  RE_PREFIX_RE // a sequence of "Re: " prefixes
@@ -61,14 +61,21 @@ QString replySubject(const QString &subject)
             oldPos = pos;
         }
 
-        QString mlPrefix = listPrefixes.join(QString());
+        QString mlPrefix = listPrefixes.join(QString()).trimmed();
         QString baseSubject = subject.mid(oldPos + qMax(0, rePrefixMatcher.matchedLength()));
 
-        if (!mlPrefix.isEmpty() && !mlPrefix.endsWith(QLatin1Char(' ')))
+        if (!mlPrefix.isEmpty() && !baseSubject.isEmpty())
             mlPrefix += QLatin1Char(' ');
 
-        return mlPrefix + correctedPrefix + baseSubject;
+        return correctedPrefix + mlPrefix + baseSubject;
     }
+}
+
+/** @short Prepare a subject to be used in a message to be forwarded */
+QString forwardSubject(const QString &subject)
+{
+    QLatin1String forwardPrefix("Fwd: ");
+    return forwardPrefix + subject;
 }
 
 }

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -21,35 +21,19 @@
 */
 
 #include "ParserState.h"
+#include "Imap/Tasks/KeepMailboxOpenTask.h"
 
-namespace Imap
-{
-namespace Mailbox
-{
+namespace Imap {
+namespace Mailbox {
 
 ParserState::ParserState(Parser *_parser):
-    parser(_parser), connState(CONN_STATE_NONE), maintainingTask(0), capabilitiesFresh(false), beingProcessed(false)
+    parser(_parser), connState(CONN_STATE_NONE), maintainingTask(0), capabilitiesFresh(false), processingDepth(false)
 {
 }
 
 ParserState::ParserState():
-    connState(CONN_STATE_NONE), maintainingTask(0), capabilitiesFresh(false), beingProcessed(false)
+    connState(CONN_STATE_NONE), maintainingTask(0), capabilitiesFresh(false), processingDepth(false)
 {
-}
-
-ParserStateGuard::ParserStateGuard(ParserState &s):
-    m_s(s), wasActive(m_s.beingProcessed)
-{
-    if (!wasActive) {
-        m_s.beingProcessed = true;
-    }
-}
-
-ParserStateGuard::~ParserStateGuard()
-{
-    if (!wasActive) {
-        m_s.beingProcessed = false;
-    }
 }
 
 }

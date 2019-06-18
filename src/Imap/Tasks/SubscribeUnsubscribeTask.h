@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,8 +24,8 @@
 #define IMAP_SUBSCRIBEUNSUBSCRIBETASK_H
 
 #include <QPersistentModelIndex>
+#include "Imap/Model/SubscribeUnSubscribeOperation.h"
 #include "ImapTask.h"
-#include "SubscribeUnSubscribeOperation.h"
 
 namespace Imap
 {
@@ -37,7 +37,8 @@ class SubscribeUnsubscribeTask : public ImapTask
 {
     Q_OBJECT
 public:
-    SubscribeUnsubscribeTask(Model *model, const QModelIndex &mailbox, SubscribeUnsubscribeOperation operation);
+    SubscribeUnsubscribeTask(Model *model, const QString &mailboxName, SubscribeUnsubscribeOperation operation);
+    SubscribeUnsubscribeTask(Model *model, ImapTask *parentTask, const QString &mailboxName, SubscribeUnsubscribeOperation operation);
     virtual void perform();
 
     virtual bool handleStateHelper(const Imap::Responses::State *const resp);
@@ -49,7 +50,7 @@ private:
     CommandHandle tag;
     ImapTask *conn;
     SubscribeUnsubscribeOperation operation;
-    QPersistentModelIndex mailboxIndex;
+    QString mailboxName;
 };
 
 }

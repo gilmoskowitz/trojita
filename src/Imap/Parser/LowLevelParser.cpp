@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -20,6 +20,8 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <limits>
+#include <QDebug>
 #include <QPair>
 #include <QStringList>
 #include <QVariant>
@@ -33,31 +35,76 @@ namespace Imap
 namespace LowLevelParser
 {
 
+template<typename T> T extractNumber(const QByteArray &line, int &start)
+{
+    if (start >= line.size())
+        throw NoData("extractNumber: no data", line, start);
+
+    const char *c_str = line.constData();
+    c_str += start;
+
+    if (*c_str < '0' || *c_str > '9')
+        throw ParseError("extractNumber: not a number", line, start);
+
+    T res = 0;
+    // well, it's an inline function, but clang still won't cache its result by default
+    const T absoluteMax = std::numeric_limits<T>::max();
+    const T softLimit = (absoluteMax - 10) / 10;
+    while (*c_str >= '0' && *c_str <= '9') {
+        auto digit = *c_str - '0';
+        if (res <= softLimit) {
+            res *= 10;
+            res += digit;
+        } else {
+            if (res > absoluteMax / 10)
+                throw ParseError("extractNumber: out of range", line, start);
+            res *= 10;
+            if (res > absoluteMax - digit)
+                throw ParseError("extractNumber: out of range", line, start);
+            res += digit;
+        }
+        ++c_str;
+        ++start;
+    }
+    return res;
+}
+
 uint getUInt(const QByteArray &line, int &start)
 {
-    if (start == line.size())
-        throw NoData("getUInt: no data", line, start);
+    return extractNumber<uint>(line, start);
+}
 
-    QByteArray item;
-    bool breakIt = false;
-    while (!breakIt && start < line.size()) {
-        switch (line[start]) {
-        case '0': case '1': case '2': case '3': case '4':
-        case '5': case '6': case '7': case '8': case '9':
-            item.append(line[start]);
-            ++start;
-            break;
-        default:
-            breakIt = true;
-            break;
-        }
+quint64 getUInt64(const QByteArray &line, int &start)
+{
+    return extractNumber<quint64>(line, start);
+}
+
+#define C_STR_CHECK_FOR_ATOM_CHARS \
+    *c_str > '\x20' && *c_str != '\x7f' /* SP and CTL */ \
+        && *c_str != '(' && *c_str != ')' && *c_str != '{' /* explicitly forbidden */ \
+        && *c_str != '%' && *c_str != '*' /* list-wildcards */ \
+        && *c_str != '"' && *c_str != '\\' /* quoted-specials */ \
+        && *c_str != ']' /* resp-specials */
+
+bool startsWithNil(const QByteArray &line, int start)
+{
+    const char *c_str = line.constData();
+    c_str += start;
+    // Case-insensitive NIL. We cannot use strncasecmp because that function respects locale settings which
+    // is absolutely not something we want to do here.
+    if (!(start <= line.size() + 3 && (*c_str == 'N' || *c_str == 'n') && (*(c_str+1) == 'I' || *(c_str+1) == 'i')
+            && (*(c_str+2) == 'L' || *(c_str+2) == 'l'))) {
+        return false;
     }
-
-    bool ok;
-    uint number = item.toUInt(&ok);
-    if (!ok)
-        throw ParseError("getUInt: not a number", line, start);
-    return number;
+    // At this point we know that it starts with a NIL. To prevent parsing ambiguity with atoms, we have to
+    // check the next character.
+    c_str += 3;
+    // That macro already checks for NULL bytes and the input is guaranteed to be null-terminated, so we're safe here
+    if (C_STR_CHECK_FOR_ATOM_CHARS) {
+        // The next character is apparently a valid atom-char, so this cannot possibly be a NIL
+        return false;
+    }
+    return true;
 }
 
 QByteArray getAtom(const QByteArray &line, int &start)
@@ -65,27 +112,43 @@ QByteArray getAtom(const QByteArray &line, int &start)
     if (start == line.size())
         throw NoData("getAtom: no data", line, start);
 
-    int old(start);
-    bool breakIt = false;
-    while (!breakIt && start < line.size()) {
-        if (line[start] <= '\x1f') {
-            // CTL characters (excluding 0x7f) as defined in ABNF
-            breakIt = true;
-            break;
-        }
-        switch (line[start]) {
-        case '(': case ')': case '{': case '\x20': case '\x7f':
-        case '%': case '*': case '"': case '\\': case ']':
-            breakIt  = true;
-            break;
-        default:
-            ++start;
-        }
+    const char *c_str = line.constData();
+    c_str += start;
+    const char * const old_str = c_str;
+
+    while (C_STR_CHECK_FOR_ATOM_CHARS) {
+        ++c_str;
     }
 
-    if (old == start)
+    auto size = c_str - old_str;
+    if (!size)
         throw ParseError("getAtom: did not read anything", line, start);
-    return line.mid(old, start - old);
+    start += size;
+    return QByteArray(old_str, size);
+}
+
+/** @short Special variation of getAtom which also accepts leading backslash */
+QByteArray getPossiblyBackslashedAtom(const QByteArray &line, int &start)
+{
+    if (start == line.size())
+        throw NoData("getPossiblyBackslashedAtom: no data", line, start);
+
+    const char *c_str = line.constData();
+    c_str += start;
+    const char * const old_str = c_str;
+
+    if (*c_str == '\\')
+        ++c_str;
+
+    while (C_STR_CHECK_FOR_ATOM_CHARS) {
+        ++c_str;
+    }
+
+    auto size = c_str - old_str;
+    if (!size)
+        throw ParseError("getPossiblyBackslashedAtom: did not read anything", line, start);
+    start += size;
+    return QByteArray(old_str, size);
 }
 
 QPair<QByteArray,ParsedAs> getString(const QByteArray &line, int &start)
@@ -102,10 +165,17 @@ QPair<QByteArray,ParsedAs> getString(const QByteArray &line, int &start)
         while (start != line.size() && !terminated) {
             if (escaping) {
                 escaping = false;
-                if (line[start] == '"' || line[start] == '\\')
+                if (line[start] == '"' || line[start] == '\\') {
                     res.append(line[start]);
-                else
+                } else if (line[start] == '(' || line[start] == ')') {
+                    // Got to support broken IMAP servers like Groupwise.
+                    // See https://bugs.kde.org/show_bug.cgi?id=334456
+                    res.append(line[start]);
+                    // FIXME: change this to parser warning when they're implemented
+                    qDebug() << "IMAP parser: quoted-string escapes something else than quoted-specials";
+                } else {
                     throw UnexpectedHere("getString: escaping invalid character", line, start);
+                }
             } else {
                 switch (line[start]) {
                 case '"':
@@ -159,27 +229,50 @@ QPair<QByteArray,ParsedAs> getAString(const QByteArray &line, int &start)
     if (start >= line.size())
         throw NoData("getAString: no data", line, start);
 
-    if (line[start] == '{' || line[start] == '"' || line[start] == '~')
+    if (line[start] == '{' || line[start] == '"' || line[start] == '~') {
         return getString(line, start);
-    else
-        return qMakePair(getAtom(line, start), ATOM);
+    } else {
+        const char *c_str = line.constData();
+        c_str += start;
+        const char * const old_str = c_str;
+        bool gotRespSpecials = false;
+
+        while (true) {
+            while (C_STR_CHECK_FOR_ATOM_CHARS) {
+                ++c_str;
+            }
+            if (*c_str == ']' /* got to explicitly allow resp-specials again...*/ ) {
+                ++c_str;
+                gotRespSpecials = true;
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        auto size = c_str - old_str;
+        if (!size)
+            throw ParseError("getAString: did not read anything", line, start);
+        start += size;
+        return qMakePair(QByteArray(old_str, size), gotRespSpecials ? ASTRING : ATOM);
+    }
 }
 
 QPair<QByteArray,ParsedAs> getNString(const QByteArray &line, int &start)
 {
-    QPair<QByteArray,ParsedAs> r = getAString(line, start);
-    if (r.second == ATOM && r.first.toUpper() == "NIL") {
-        r.first.clear();
-        r.second = NIL;
+    if (startsWithNil(line, start)) {
+        start += 3;
+        return qMakePair<>(QByteArray(), NIL);
+    } else {
+        return getAString(line, start);
     }
-    return r;
 }
 
 QString getMailbox(const QByteArray &line, int &start)
 {
     QPair<QByteArray,ParsedAs> r = getAString(line, start);
     if (r.first.toUpper() == "INBOX")
-        return QLatin1String("INBOX");
+        return QStringLiteral("INBOX");
     else
         return decodeImapFolderName(r.first);
 
@@ -235,7 +328,7 @@ QVariant getAnything(const QByteArray &line, int &start)
     } else if (line[start] == '"' || line[start] == '{' || line[start] == '~') {
         QPair<QByteArray,ParsedAs> res = getString(line, start);
         return res.first;
-    } else if (line.mid(start, 3).toUpper() == "NIL") {
+    } else if (startsWithNil(line, start)) {
         start += 3;
         return QByteArray();
     } else if (line[start] == '\\') {
@@ -247,49 +340,40 @@ QVariant getAnything(const QByteArray &line, int &start)
             ++start;
             return QByteArray("\\*");
         }
-        return QByteArray(1, '\\') + getAtom(line, start);
+        return QByteArray(QByteArray(1, '\\') + getAtom(line, start));
     } else {
-        switch (line.at(start)) {
-        case '0': case '1': case '2': case '3': case '4':
-        case '5': case '6': case '7': case '8': case '9':
-            return getUInt(line, start);
-            break;
-        default:
-        {
-            QByteArray atom = getAtom(line, start);
-            if (atom.indexOf('[', 0) != -1) {
-                // "BODY[something]" -- there's no whitespace between "[" and
-                // next atom...
-                int pos = line.indexOf(']', start);
+        QByteArray atom = getAtom(line, start);
+        if (atom.indexOf('[', 0) != -1) {
+            // "BODY[something]" -- there's no whitespace between "[" and
+            // next atom...
+            int pos = line.indexOf(']', start);
+            if (pos == -1)
+                throw ParseError("getAnything: can't find ']' for the '['", line, start);
+            ++pos;
+            atom += line.mid(start, pos - start);
+            start = pos;
+            if (start < line.size() && line[start] == '<') {
+                // Let's check if it continues with "<range>"
+                pos = line.indexOf('>', start);
                 if (pos == -1)
-                    throw ParseError("getAnything: can't find ']' for the '['", line, start);
+                    throw ParseError("getAnything: can't find proper <range>", line, start);
                 ++pos;
                 atom += line.mid(start, pos - start);
                 start = pos;
-                if (start < line.size() && line[start] == '<') {
-                    // Let's check if it continues with "<range>"
-                    pos = line.indexOf('>', start);
-                    if (pos == -1)
-                        throw ParseError("getAnything: can't find proper <range>", line, start);
-                    ++pos;
-                    atom += line.mid(start, pos - start);
-                    start = pos;
-                }
             }
-            return atom;
         }
-        }
+        return atom;
     }
 }
 
-QList<uint> getSequence(const QByteArray &line, int &start)
+Imap::Uids getSequence(const QByteArray &line, int &start)
 {
     uint num = LowLevelParser::getUInt(line, start);
     if (start >= line.size() - 2) {
         // It's definitely just a number because there's no more data in here
-        return QList<uint>() << num;
+        return Imap::Uids() << num;
     } else {
-        QList<uint> numbers;
+        Imap::Uids numbers;
         numbers << num;
 
         enum {COMMA, RANGE} currentType = COMMA;
@@ -329,19 +413,19 @@ QList<uint> getSequence(const QByteArray &line, int &start)
     }
 }
 
-QDateTime parseRFC2822DateTime(const QString &string)
+QDateTime parseRFC2822DateTime(const QByteArray &input)
 {
-    QStringList monthNames = QStringList() << QLatin1String("jan") << QLatin1String("feb") << QLatin1String("mar")
-                                           << QLatin1String("apr") << QLatin1String("may") << QLatin1String("jun")
-                                           << QLatin1String("jul") << QLatin1String("aug") << QLatin1String("sep")
-                                           << QLatin1String("oct") << QLatin1String("nov") << QLatin1String("dec");
+    QStringList monthNames = QStringList() << QStringLiteral("jan") << QStringLiteral("feb") << QStringLiteral("mar")
+                                           << QStringLiteral("apr") << QStringLiteral("may") << QStringLiteral("jun")
+                                           << QStringLiteral("jul") << QStringLiteral("aug") << QStringLiteral("sep")
+                                           << QStringLiteral("oct") << QStringLiteral("nov") << QStringLiteral("dec");
 
     QRegExp rx(QString::fromUtf8("^(?:\\s*([A-Z][a-z]+)\\s*,\\s*)?"   // date-of-week
                                  "(\\d{1,2})\\s+(%1)\\s+(\\d{2,4})" // date
                                  "\\s+(\\d{1,2})\\s*:(\\d{1,2})\\s*(?::\\s*(\\d{1,2})\\s*)?" // time
                                  "(\\s+(?:(?:([+-]?)(\\d{2})(\\d{2}))|(UT|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT|[A-IK-Za-ik-z])))?" // timezone
                                  ).arg(monthNames.join(QLatin1String("|"))), Qt::CaseInsensitive);
-    int pos = rx.indexIn(string);
+    int pos = rx.indexIn(QString::fromUtf8(input));
 
     if (pos == -1)
         throw ParseError("Date format not recognized");

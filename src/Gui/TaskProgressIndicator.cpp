@@ -1,4 +1,5 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
+   Copyright (C) 2014 Thomas Lübking <thomas.luebking@gmail.com>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -23,6 +24,8 @@
 #include "TaskProgressIndicator.h"
 #include <QApplication>
 #include <QMouseEvent>
+#include <QTimer>
+#include "Gui/Spinner.h"
 #include "Imap/Model/Model.h"
 #include "Imap/Model/VisibleTasksModel.h"
 
@@ -30,10 +33,16 @@ namespace Gui
 {
 
 TaskProgressIndicator::TaskProgressIndicator(QWidget *parent) :
-    QProgressBar(parent), m_busy(false)
+    Spinner(parent), m_busyCursorTrigger(new QTimer(this)), m_busy(false)
 {
-    setMinimum(0);
-    setMaximum(0);
+    connect(m_busyCursorTrigger, &QTimer::timeout, []() {
+        QApplication::setOverrideCursor(Qt::BusyCursor);
+    });
+    m_busyCursorTrigger->setSingleShot(true);
+    m_busyCursorTrigger->setInterval(666);
+
+    setType(Spinner::Elastic);
+    setContext(Spinner::Throbber);
 }
 
 /** @short Connect to the specified IMAP model as the source of the activity information */
@@ -41,10 +50,10 @@ void TaskProgressIndicator::setImapModel(Imap::Mailbox::Model *model)
 {
     if (model) {
         m_visibleTasksModel = new Imap::Mailbox::VisibleTasksModel(model, model->taskModel());
-        connect(m_visibleTasksModel, SIGNAL(layoutChanged()), this, SLOT(updateActivityIndication()));
-        connect(m_visibleTasksModel, SIGNAL(modelReset()), this, SLOT(updateActivityIndication()));
-        connect(m_visibleTasksModel, SIGNAL(rowsInserted(QModelIndex,int,int)), this, SLOT(updateActivityIndication()));
-        connect(m_visibleTasksModel, SIGNAL(rowsRemoved(QModelIndex,int,int)), this, SLOT(updateActivityIndication()));
+        connect(m_visibleTasksModel.data(), &QAbstractItemModel::layoutChanged, this, &TaskProgressIndicator::updateActivityIndication);
+        connect(m_visibleTasksModel.data(), &QAbstractItemModel::modelReset, this, &TaskProgressIndicator::updateActivityIndication);
+        connect(m_visibleTasksModel.data(), &QAbstractItemModel::rowsInserted, this, &TaskProgressIndicator::updateActivityIndication);
+        connect(m_visibleTasksModel.data(), &QAbstractItemModel::rowsRemoved, this, &TaskProgressIndicator::updateActivityIndication);
     }
 }
 
@@ -55,33 +64,29 @@ void TaskProgressIndicator::updateActivityIndication()
         return;
 
     bool busy = m_visibleTasksModel->hasChildren();
-    setVisible(busy);
     if (!m_busy && busy) {
-        QApplication::setOverrideCursor(Qt::WaitCursor);
+        start();
+        if (!m_busyCursorTrigger->isActive()) {
+            // do NOT restart, we don't want to prolong this delay
+            m_busyCursorTrigger->start();
+        }
     } else if (m_busy && !busy) {
-        QApplication::restoreOverrideCursor();
+        stop();
+        if (!m_busyCursorTrigger->isActive()) {
+            // don't restore unless we've alredy set it
+            QApplication::restoreOverrideCursor();
+        }
+        // don't cause future timeout
+        m_busyCursorTrigger->stop();
     }
 
     if (busy) {
-        setToolTip(tr("%1 ongoing actions").arg(QString::number(m_visibleTasksModel->rowCount())));
+        setToolTip(tr("%n ongoing actions", 0, m_visibleTasksModel->rowCount()));
     } else {
         setToolTip(tr("IMAP connection idle"));
     }
 
     m_busy = busy;
-}
-
-/** @short Reimplemented from QProgressBar for launching the pop-up widgets with detailed activity */
-void TaskProgressIndicator::mousePressEvent(QMouseEvent *event)
-{
-    if (!m_visibleTasksModel)
-        return;
-
-    if (event->buttons() == Qt::LeftButton) {
-        event->accept();
-    } else {
-        QProgressBar::mousePressEvent(event);
-    }
 }
 
 }

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -23,12 +23,12 @@
 #include "MsgListModel.h"
 #include "MailboxTree.h"
 #include "MailboxModel.h"
-#include "QAIM_reset.h"
 
 #include <QDebug>
 #include <QFontMetrics>
 #include <QIcon>
 #include <QMimeData>
+#include "UiUtils/IconLoader.h"
 
 namespace Imap
 {
@@ -40,50 +40,36 @@ MsgListModel::MsgListModel(QObject *parent, Model *model): QAbstractProxyModel(p
     setSourceModel(model);
 
     // FIXME: will need to be expanded when Model supports more signals...
-    connect(model, SIGNAL(modelAboutToBeReset()), this, SLOT(resetMe()));
-    connect(model, SIGNAL(layoutAboutToBeChanged()), this, SIGNAL(layoutAboutToBeChanged()));
-    connect(model, SIGNAL(layoutChanged()), this, SIGNAL(layoutChanged()));
-    connect(model, SIGNAL(dataChanged(const QModelIndex &, const QModelIndex &)),
-            this, SLOT(handleDataChanged(const QModelIndex &, const QModelIndex &)));
-    connect(model, SIGNAL(rowsAboutToBeRemoved(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsAboutToBeRemoved(const QModelIndex &, int,int)));
-    connect(model, SIGNAL(rowsRemoved(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsRemoved(const QModelIndex &, int,int)));
-    connect(model, SIGNAL(rowsAboutToBeInserted(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsAboutToBeInserted(const QModelIndex &, int,int)));
-    connect(model, SIGNAL(rowsInserted(const QModelIndex &, int, int)),
-            this, SLOT(handleRowsInserted(const QModelIndex &, int,int)));
+    connect(model, &QAbstractItemModel::modelAboutToBeReset, this, &MsgListModel::resetMe);
+    connect(model, &QAbstractItemModel::layoutAboutToBeChanged, this, &QAbstractItemModel::layoutAboutToBeChanged);
+    connect(model, &QAbstractItemModel::layoutChanged, this, &QAbstractItemModel::layoutChanged);
+    connect(model, &QAbstractItemModel::dataChanged, this, &MsgListModel::handleDataChanged);
+    connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this, &MsgListModel::handleRowsAboutToBeRemoved);
+    connect(model, &QAbstractItemModel::rowsRemoved, this, &MsgListModel::handleRowsRemoved);
+    connect(model, &QAbstractItemModel::rowsAboutToBeInserted, this, &MsgListModel::handleRowsAboutToBeInserted);
+    connect(model, &QAbstractItemModel::rowsInserted, this, &MsgListModel::handleRowsInserted);
 
-    connect(this, SIGNAL(layoutChanged()), this, SIGNAL(indexStateChanged()));
-    connect(this, SIGNAL(modelReset()), this, SIGNAL(indexStateChanged()));
-    connect(this, SIGNAL(rowsInserted(QModelIndex,int,int)), this, SIGNAL(indexStateChanged()));
-    connect(this, SIGNAL(rowsRemoved(QModelIndex,int,int)), this, SIGNAL(indexStateChanged()));
-
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-    // There's no virtual in Qt4.
-    setRoleNames(trojitaProxyRoleNames());
-#else
-    // In Qt5, the roleNames() is virtual and will work just fine.
-#endif
+    connect(this, &QAbstractItemModel::layoutChanged, this, &MsgListModel::indexStateChanged);
+    connect(this, &QAbstractItemModel::modelReset, this, &MsgListModel::indexStateChanged);
+    connect(this, &QAbstractItemModel::rowsInserted, this, &MsgListModel::indexStateChanged);
+    connect(this, &QAbstractItemModel::rowsRemoved, this, &MsgListModel::indexStateChanged);
 }
 
-// The following code is pretty much a huge PITA. The handling of roleNames() has changed between Qt4 and Qt5 in a way which makes
-// it rather convoluted to support both in the same code base. Oh well.
-#if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
-QHash<int, QByteArray> MsgListModel::trojitaProxyRoleNames() const
-#else
 QHash<int, QByteArray> MsgListModel::roleNames() const
-#endif
 {
     static QHash<int, QByteArray> roleNames;
     if (roleNames.isEmpty()) {
         roleNames[RoleIsFetched] = "isFetched";
+        roleNames[RoleIsUnavailable] = "isUnavailable";
         roleNames[RoleMessageUid] = "messageUid";
         roleNames[RoleMessageIsMarkedDeleted] = "isMarkedDeleted";
         roleNames[RoleMessageIsMarkedRead] = "isMarkedRead";
         roleNames[RoleMessageIsMarkedForwarded] = "isMarkedForwarded";
         roleNames[RoleMessageIsMarkedReplied] = "isMarkedReplied";
         roleNames[RoleMessageIsMarkedRecent] = "isMarkedRecent";
+        roleNames[RoleMessageIsMarkedFlagged] = "isMarkedFlagged";
+        roleNames[RoleMessageIsMarkedJunk] = "isMarkedJunk";
+        roleNames[RoleMessageIsMarkedNotJunk] = "isMarkedNotJunk";
         roleNames[RoleMessageDate] = "date";
         roleNames[RoleMessageInternalDate] = "receivedDate";
         roleNames[RoleMessageFrom] = "from";
@@ -98,6 +84,7 @@ QHash<int, QByteArray> MsgListModel::roleNames() const
         roleNames[RoleMessageFlags] = "flags";
         roleNames[RoleMessageSize] = "size";
         roleNames[RoleMessageFuzzyDate] = "fuzzyDate";
+        roleNames[RoleMessageHasAttachments] = "hasAttachments";
     }
     return roleNames;
 }
@@ -242,18 +229,22 @@ QVariant MsgListModel::data(const QModelIndex &proxyIndex, int role) const
         case RECEIVED_DATE:
             return message->internalDate(static_cast<Model *>(sourceModel()));
         case SIZE:
-            return message->size(static_cast<Model *>(sourceModel()));
+            return QVariant::fromValue(message->size(static_cast<Model *>(sourceModel())));
         default:
             return QVariant();
         }
 
     case RoleIsFetched:
+    case RoleIsUnavailable:
     case RoleMessageUid:
     case RoleMessageIsMarkedDeleted:
     case RoleMessageIsMarkedRead:
     case RoleMessageIsMarkedForwarded:
     case RoleMessageIsMarkedReplied:
     case RoleMessageIsMarkedRecent:
+    case RoleMessageIsMarkedFlagged:
+    case RoleMessageIsMarkedJunk:
+    case RoleMessageIsMarkedNotJunk:
     case RoleMessageDate:
     case RoleMessageFrom:
     case RoleMessageTo:
@@ -269,6 +260,7 @@ QVariant MsgListModel::data(const QModelIndex &proxyIndex, int role) const
     case RoleMessageHeaderReferences:
     case RoleMessageHeaderListPost:
     case RoleMessageHeaderListPostNo:
+    case RoleMessageHasAttachments:
         return dynamic_cast<TreeItemMessage *>(Model::realTreeItem(
                 proxyIndex))->data(static_cast<Model *>(sourceModel()), role);
     default:
@@ -278,6 +270,9 @@ QVariant MsgListModel::data(const QModelIndex &proxyIndex, int role) const
 
 QVariant MsgListModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
+    if (orientation == Qt::Horizontal && role == Qt::DecorationRole && section == ATTACHMENT)
+        return UiUtils::loadIcon(QStringLiteral("mail-attachment"));
+
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
         return QAbstractItemModel::headerData(section, orientation, role);
 
@@ -305,27 +300,39 @@ QVariant MsgListModel::headerData(int section, Qt::Orientation orientation, int 
 
 Qt::ItemFlags MsgListModel::flags(const QModelIndex &index) const
 {
-    if (! index.isValid() || index.model() != this)
-        return QAbstractProxyModel::flags(index);
+    if (!index.isValid())
+        return Qt::NoItemFlags;
 
-    TreeItemMessage *message = dynamic_cast<TreeItemMessage *>(
-                                   Model::realTreeItem(index));
+    TreeItemMessage *message = dynamic_cast<TreeItemMessage *>(Model::realTreeItem(index));
     Q_ASSERT(message);
 
-    if (! message->fetched())
-        return QAbstractProxyModel::flags(index);
+    if (!message->uid())
+        return Qt::NoItemFlags;
 
-    return Qt::ItemIsDragEnabled | QAbstractProxyModel::flags(index);
+    return Qt::ItemIsSelectable | Qt::ItemIsDragEnabled | Qt::ItemIsEnabled;
 }
 
-Qt::DropActions MsgListModel::supportedDropActions() const
+Qt::DropActions MsgListModel::supportedDragActions() const
 {
     return Qt::CopyAction | Qt::MoveAction;
 }
 
+Qt::DropActions MsgListModel::supportedDropActions() const
+{
+    // Right now the GUI code doesn't allow dropping items into mailbox by dragging them
+    // to a listing of mailbox' content, but if we just return Qt::IgnoreAction form here,
+    // stuff breaks on Qt prior to 5.4.0 because on old Qt, the proxy models call
+    // supportedDropActions() unless supportedDragActions is reimplemented on each level.
+#if QT_VERSION < QT_VERSION_CHECK(5, 4, 0)
+    return Qt::CopyAction | Qt::MoveAction;
+#else
+    return Qt::IgnoreAction;
+#endif
+}
+
 QStringList MsgListModel::mimeTypes() const
 {
-    return QStringList() << QLatin1String("application/x-trojita-message-list");
+    return QStringList() << QStringLiteral("application/x-trojita-message-list");
 }
 
 QMimeData *MsgListModel::mimeData(const QModelIndexList &indexes) const
@@ -347,22 +354,22 @@ QMimeData *MsgListModel::mimeData(const QModelIndexList &indexes) const
     for (QModelIndexList::const_iterator it = indexes.begin(); it != indexes.end(); ++it) {
         TreeItemMessage *message = dynamic_cast<TreeItemMessage *>(Model::realTreeItem(*it));
         Q_ASSERT(message);
-        Q_ASSERT(message->fetched());   // should've been handled by flags()
         Q_ASSERT(message->parent()->parent() == mailbox);
         Q_ASSERT(message->uid() > 0);
         uids << message->uid();
     }
     uids = uids.toSet().toList();
     stream << uids;
-    res->setData(QLatin1String("application/x-trojita-message-list"), encodedData);
+    res->setData(QStringLiteral("application/x-trojita-message-list"), encodedData);
     return res;
 }
 
 void MsgListModel::resetMe()
 {
+    beginResetModel();
     msgListPtr = 0;
     msgList = QModelIndex();
-    RESET_MODEL;
+    endResetModel();
 }
 
 void MsgListModel::handleRowsAboutToBeRemoved(const QModelIndex &parent, int start, int end)
@@ -484,11 +491,15 @@ void MsgListModel::setMailbox(const QModelIndex &index)
         msgListPtr = newList;
         msgList = msgListPtr->toIndex(const_cast<Model*>(model));
         msgListPtr->resetWasUnreadState();
-        RESET_MODEL;
-        emit mailboxChanged();
-        // We want to tell the Model that it should consider starting the IDLE command.
-        const_cast<Model *>(model)->switchToMailbox(index);
+        beginResetModel();
+        endResetModel();
+        emit mailboxChanged(index);
     }
+
+    // We want to tell the Model that it should consider starting the IDLE command.
+    // This shall happen regardless on what this model's idea about a "current mailbox" is because the IMAP connection might have
+    // switched to another mailbox behind the scenes.
+    const_cast<Model *>(model)->switchToMailbox(index);
 }
 
 /** @short Change mailbox to the one specified by its name */

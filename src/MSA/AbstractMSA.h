@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,6 +24,7 @@
 
 #include <QByteArray>
 #include <QObject>
+#include "Imap/Model/UidSubmitData.h"
 
 namespace MSA
 {
@@ -34,18 +35,30 @@ class AbstractMSA : public QObject
 public:
     explicit AbstractMSA(QObject *parent);
     virtual ~AbstractMSA();
-    virtual void sendMail(const QByteArray &from, const QList<QByteArray> &to, const QByteArray &data) = 0;
     virtual bool supportsBurl() const;
+    virtual bool supportsImapSending() const;
+    virtual void sendMail(const QByteArray &from, const QList<QByteArray> &to, const QByteArray &data);
     virtual void sendBurl(const QByteArray &from, const QList<QByteArray> &to, const QByteArray &imapUrl);
+    virtual void sendImap(const QString &mailbox, const int uidValidity, const int uid,
+                          const Imap::Mailbox::UidSubmitOptionsList options);
 public slots:
     virtual void cancel() = 0;
+    virtual void setPassword(const QString &password);
 signals:
     void connecting();
+    void passwordRequested(const QString &user, const QString &host);
     void sending();
     void sent();
     void error(const QString &message);
     void progressMax(int max);
     void progress(int num);
+};
+
+/** @short Factory producing AbstractMSA instances */
+class MSAFactory {
+public:
+    virtual ~MSAFactory();
+    virtual AbstractMSA *create(QObject *parent) const = 0;
 };
 
 }

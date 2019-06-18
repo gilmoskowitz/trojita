@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -20,7 +20,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "UserAgentWebPage.h"
-#include <QtCore/QCoreApplication>
+#include "Common/Application.h"
 #include "Imap/Model/Utils.h"
 
 namespace Gui
@@ -33,7 +33,7 @@ UserAgentWebPage::UserAgentWebPage(QWidget *parent): QWebPage(parent)
 QString UserAgentWebPage::userAgentForUrl(const QUrl &url) const
 {
     Q_UNUSED(url);
-    return QString::fromUtf8("Trojita/%1; %2").arg(QCoreApplication::applicationVersion(), Imap::Mailbox::systemPlatformVersion());
+    return QStringLiteral("Trojita/%1; %2").arg(Common::Application::version, Imap::Mailbox::systemPlatformVersion());
 }
 
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -34,6 +34,9 @@ public:
     virtual QString quoteMe() const = 0;
     virtual ~AbstractPartWidget() {}
     virtual void reloadContents() = 0;
+    virtual void zoomIn() = 0;
+    virtual void zoomOut() = 0;
+    virtual void zoomOriginal() = 0;
 };
 
 }

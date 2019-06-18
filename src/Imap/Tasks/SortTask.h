@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -54,7 +54,7 @@ public:
 
 signals:
     /** @short Sort result has arrived */
-    void sortingAvailable(const QList<uint> &uids);
+    void sortingAvailable(const Imap::Uids &uids);
 
     /** @short Sort operation has failed */
     void sortingFailed();
@@ -71,7 +71,7 @@ private:
     QPersistentModelIndex mailboxIndex;
     QStringList searchConditions;
     QStringList sortCriteria;
-    QList<uint> sortResult;
+    Imap::Uids sortResult;
 
     /** @short Are we supposed to run in a "persistent mode", ie. keep listening for updates? */
     bool m_persistentSearch;

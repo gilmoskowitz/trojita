@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,12 @@
 #ifndef ATTACHMENTVIEW_H
 #define ATTACHMENTVIEW_H
 
+#include <QFrame>
 #include <QModelIndex>
-#include <QWidget>
+#include "Gui/AbstractPartWidget.h"
 
-
+class QLabel;
+class QMenu;
 class QNetworkReply;
 class QPushButton;
 class QTemporaryFile;
@@ -35,13 +37,14 @@ namespace Imap
 {
 namespace Network
 {
-class FileDownloadManager;
 class MsgPartNetAccessManager;
 }
 }
 
 namespace Gui
 {
+
+class MessageView;
 
 /** @short Widget depicting an attachment
 
@@ -50,31 +53,58 @@ namespace Gui
   type of the body part and the download button.  It also includes code for
   handling the actual download.
 */
-class AttachmentView : public QWidget
+class AttachmentView : public QFrame, public AbstractPartWidget
 {
     Q_OBJECT
 public:
-    AttachmentView(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &m_partIndex);
+    AttachmentView(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &m_partIndex,
+                   MessageView *messageView, QWidget *contentWidget);
+    virtual QString quoteMe() const;
+    virtual void reloadContents();
+    virtual void zoomIn();
+    virtual void zoomOut();
+    virtual void zoomOriginal();
 protected:
+    virtual void mouseMoveEvent(QMouseEvent *event);
     virtual void mousePressEvent(QMouseEvent *event);
+    virtual void paintEvent(QPaintEvent *event);
 private slots:
     void slotDownloadAttachment();
     void slotOpenAttachment();
+    void showMessageSource();
 
-    void slotTransferError(const QString &errorString);
+    void indicateHover();
+    void openDownloadedAttachment();
     void slotFileNameRequestedOnOpen(QString *fileName);
     void slotFileNameRequested(QString *fileName);
-    void slotTransferSucceeded();
+    void enableDownloadAgain();
+    void onOpenFailed();
+    void updateShowHideAttachmentState();
+    void showMenu();
+    void showMenuOrPreview();
+    void toggleIconCursor();
 
 private:
-    QModelIndex m_partIndex;
-    Imap::Network::FileDownloadManager *m_fileDownloadManager;
-    QToolButton *m_downloadButton;
+    QPersistentModelIndex m_partIndex;
+
+    MessageView *m_messageView;
 
     QAction *m_downloadAttachment;
     QAction *m_openAttachment;
+    QAction *m_showHideAttachment;
+    QAction *m_showSource;
+    QMenu *m_menu;
+    QToolButton *m_icon;
+    QLabel *m_fileName;
+
+    Imap::Network::MsgPartNetAccessManager *m_netAccess;
 
     QTemporaryFile *m_tmpFile;
+    QWidget *m_contentWidget;
+
+    QPoint m_dragStartPos;
+
+    bool previewIsShown() const;
 
     AttachmentView(const AttachmentView &); // don't implement
     AttachmentView &operator=(const AttachmentView &); // don't implement

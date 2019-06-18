@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -36,7 +36,7 @@ class FetchMsgMetadataTask : public ImapTask
 {
     Q_OBJECT
 public:
-    FetchMsgMetadataTask(Model *model, const QModelIndex &mailbox, const QList<uint> &uids);
+    FetchMsgMetadataTask(Model *model, const QModelIndex &mailbox, const Imap::Uids &uids);
     virtual void perform();
 
     virtual bool handleFetch(const Imap::Responses::Fetch *const resp);
@@ -49,7 +49,7 @@ private:
     CommandHandle tag;
     ImapTask *conn;
     QPersistentModelIndex mailbox;
-    QList<uint> uids;
+    Imap::Uids uids;
 };
 
 }

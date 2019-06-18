@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -44,7 +44,8 @@ typedef enum {
     CONN_STATE_POSTAUTH_PRECAPS, /**< @short Authenticated, but capabilities weren't refreshed yet */
     CONN_STATE_COMPRESS_DEFLATE, /**< @short Activating COMPRESS DEFLATE */
     CONN_STATE_AUTHENTICATED, /**< @short Logged in */
-    CONN_STATE_SELECTING, /**< @short Selecting a mailbox -- initial state */
+    CONN_STATE_SELECTING_WAIT_FOR_CLOSE, /**< @short Will be selecting another mailbox -- waiting for the CLOSED response code */
+    CONN_STATE_SELECTING, /**< @short Selecting a mailbox -- waiting for mailbox metadata */
     CONN_STATE_SYNCING, /**< @short Selecting a mailbox -- performing synchronization */
     CONN_STATE_SELECTED, /**< @short Mailbox is selected and synchronized */
     CONN_STATE_FETCHING_PART, /** @short Downloading an actual body part */

@@ -37,26 +37,18 @@
 #include "Common/PortNumbers.h"
 #include "Common/SettingsNames.h"
 #include "XtCache.h"
-#include "Imap/Model/MemoryCache.h"
 #include "Imap/Model/ItemRoles.h"
-#include "MailboxFinder.h"
+#include "Imap/Model/MailboxFinder.h"
+#include "Imap/Model/MemoryCache.h"
 #include "MessageDownloader.h"
 #include "SqlStorage.h"
 #include "Streams/SocketFactory.h"
-
-Q_DECLARE_METATYPE(QList<QSslCertificate>)
-#if QT_VERSION < 0x050000
-Q_DECLARE_METATYPE(QList<QSslError>)
-#endif
 
 namespace XtConnect {
 
 XtConnect::XtConnect(QObject *parent, QSettings *s) :
     QObject(parent), m_model(0), m_settings(s), m_cache(0)
 {
-    qRegisterMetaType<QList<QSslCertificate> >();
-    qRegisterMetaType<QList<QSslError> >();
-
     Q_ASSERT(m_settings);
     m_settings->setParent(this);
     if ( ! m_settings->contains( Common::SettingsNames::xtConnectCacheDirectory ) ) {
@@ -74,27 +66,27 @@ XtConnect::XtConnect(QObject *parent, QSettings *s) :
 
     QStringList args = QCoreApplication::arguments();
     for ( int i = 1; i < args.length(); i++ ) {
-        if (args.at(i) == "-h" && args.length() > i ) {
+        if (args.at(i) == QLatin1String("-h") && args.length() > i ) {
             if (args.length() <= i + 1) qFatal("The \"-h\" option requires a value.");
             host = args.at(++i);
-        } else if (args.at(i) == "-d" && args.length() > i ) {
+        } else if (args.at(i) == QLatin1String("-d") && args.length() > i ) {
             if (args.length() <= i + 1) qFatal("The \"-d\" option requires a value.");
             dbname = args.at(++i);
-        } else if (args.at(i) == "-p" && args.length() > i ) {
+        } else if (args.at(i) == QLatin1String("-p") && args.length() > i ) {
             if (args.length() <= i + 1) qFatal("The \"-p\" option requires a value.");
             port = args.at(++i).toInt();
-        } else if (args.at(i) == "-U" && args.length() > i ) {
+        } else if (args.at(i) == QLatin1String("-U") && args.length() > i ) {
             if (args.length() <= i + 1) qFatal("The \"-U\" option requires a value.");
             username = args.at(++i);
-        } else if (args.at(i) == "-w") {
+        } else if (args.at(i) == QLatin1String("-w")) {
             if (args.length() <= i + 1) qFatal("The \"-w\" option requires a value.");
             readstdin = false;
             password = args.at(++i);
-        } else if (args.at(i) == "-W") {
+        } else if (args.at(i) == QLatin1String("-W")) {
             readstdin = true;
-        } else if (args.at(i) == "--debug") {
+        } else if (args.at(i) == QLatin1String("--debug")) {
             logConsole = true;
-        } else if (args.at(i) == "--log" && args.length() > i) {
+        } else if (args.at(i) == QLatin1String("--log") && args.length() > i) {
             if (args.length() <= i + 1) qFatal("The \"--log\" option requires a value.");
             logFile = args.at(++i);
         } else {
@@ -120,7 +112,7 @@ XtConnect::XtConnect(QObject *parent, QSettings *s) :
     connect(m_model, SIGNAL(logged(uint,Common::LogMessage)), logger, SLOT(slotImapLogged(uint,Common::LogMessage)));
 
     // Prepare the mailboxes
-    m_finder = new MailboxFinder( this, m_model );
+    m_finder = new Imap::Mailbox::MailboxFinder( this, m_model );
     SqlStorage *storage = new SqlStorage( this, host, port, dbname, username, password );
     connect(storage, SIGNAL(encounteredError(QString)), this, SLOT(slotSqlError(QString)));
     storage->open();
@@ -153,12 +145,12 @@ void XtConnect::setupModels()
 
     using Common::SettingsNames;
     if ( m_settings->value( SettingsNames::imapMethodKey ).toString() == SettingsNames::methodTCP ) {
-        factory.reset( new Imap::Mailbox::TlsAbleSocketFactory(
+        factory.reset( new Streams::TlsAbleSocketFactory(
                 m_settings->value( SettingsNames::imapHostKey ).toString(),
                 m_settings->value( SettingsNames::imapPortKey, QString::number(Common::PORT_IMAP) ).toUInt() ) );
         factory->setStartTlsRequired( m_settings->value( SettingsNames::imapStartTlsKey, true ).toBool() );
     } else if ( m_settings->value( SettingsNames::imapMethodKey ).toString() == SettingsNames::methodSSL ) {
-        factory.reset( new Imap::Mailbox::SslSocketFactory(
+        factory.reset( new Streams::SslSocketFactory(
                 m_settings->value( SettingsNames::imapHostKey ).toString(),
                 m_settings->value( SettingsNames::imapPortKey, QString::number(Common::PORT_IMAPS) ).toUInt() ) );
     } else {
@@ -167,7 +159,7 @@ void XtConnect::setupModels()
             qFatal("Invalid value found in the settings of imapProcessKey");
         }
         QString appName = args.takeFirst();
-        factory.reset( new Imap::Mailbox::ProcessSocketFactory( appName, args ) );
+        factory.reset( new Streams::ProcessSocketFactory( appName, args ) );
     }
 
     bool shouldUsePersistentCache = true;
@@ -188,9 +180,9 @@ void XtConnect::setupModels()
         }
     }
 
-    m_model = new Imap::Mailbox::Model( this, m_cache ? static_cast<Imap::Mailbox::AbstractCache*>( m_cache ) :
-                                                        static_cast<Imap::Mailbox::AbstractCache*>( new Imap::Mailbox::MemoryCache( this, QString() ) ),
-                                        factory, taskFactory, m_settings->value( SettingsNames::imapStartOffline ).toBool() );
+    m_model = new Imap::Mailbox::Model(this, m_cache ? static_cast<Imap::Mailbox::AbstractCache*>(m_cache) :
+                                                       static_cast<Imap::Mailbox::AbstractCache*>(new Imap::Mailbox::MemoryCache(this)),
+                                       std::move(factory), std::move(taskFactory));
     m_model->setObjectName( QLatin1String("model") );
     // We want to wait longer to increase the potential of better grouping -- we don't care much about the latency
     m_model->setProperty( "trojita-imap-delayed-fetch-part", 300 );
@@ -199,12 +191,13 @@ void XtConnect::setupModels()
     m_model->setProperty("trojita-imap-preload-msg-metadata", 0);
 
     connect( m_model, SIGNAL( alertReceived( const QString& ) ), this, SLOT( alertReceived( const QString& ) ) );
-    connect( m_model, SIGNAL( connectionError( const QString& ) ), this, SLOT( connectionError( const QString& ) ) );
+    connect( m_model, SIGNAL( imapError( const QString& ) ), this, SLOT( connectionError( const QString& ) ) );
+    connect( m_model, SIGNAL( networkError( const QString& ) ), this, SLOT( connectionError( const QString& ) ) );
     connect(m_model, SIGNAL(authRequested()), this, SLOT(authenticationRequested()), Qt::QueuedConnection);
     connect(m_model, SIGNAL(authAttemptFailed(QString)), this, SLOT(authenticationFailed(QString)));
     connect(m_model, SIGNAL(needsSslDecision(QList<QSslCertificate>,QList<QSslError>)),
             this, SLOT(sslErrors(QList<QSslCertificate>,QList<QSslError>)), Qt::QueuedConnection);
-    connect( m_model, SIGNAL(connectionStateChanged(QObject*,Imap::ConnectionState)), this, SLOT(showConnectionStatus(QObject*,Imap::ConnectionState)) );
+    connect( m_model, SIGNAL(connectionStateChanged(uint,Imap::ConnectionState)), this, SLOT(showConnectionStatus(uint,Imap::ConnectionState)) );
 }
 
 void XtConnect::alertReceived(const QString &alert)
@@ -214,17 +207,16 @@ void XtConnect::alertReceived(const QString &alert)
 
 void XtConnect::authenticationRequested()
 {
-    if ( ! m_settings->contains(Common::SettingsNames::imapPassKey) ) {
-        qWarning() << "Warning: no IMAP password set in the configuration.";
-        qWarning() << "Please remember to configure the synchronization service in Trojita GUI's settings dialog.";
-    }
     m_model->setImapUser(m_settings->value(Common::SettingsNames::imapUserKey).toString());
-    m_model->setImapPassword(m_settings->value(Common::SettingsNames::imapPassKey).toString());
+    qCritical() << "Authentication Requested but the IMAP password is currently unavailable";
+    // m_model->setImapPassword(m_imapPassword);
 }
 
 void XtConnect::sslErrors(const QList<QSslCertificate> &certificateChain, const QList<QSslError> &errors)
 {
-    QByteArray lastKnownCertPem = m_settings->value(Common::SettingsNames::imapSslPemCertificate).toByteArray();
+    QByteArray lastKnownCertPem = m_settings->value(Common::SettingsNames::imapSslPemPubKey).toByteArray();
+    if (lastKnownCertPem.isEmpty())
+        lastKnownCertPem = m_settings->value(Common::SettingsNames::obsImapSslPemCertificate).toByteArray();
     QList<QSslCertificate> lastKnownCerts = lastKnownCertPem.isEmpty() ?
                 QList<QSslCertificate>() :
                 QSslCertificate::fromData(lastKnownCertPem, QSsl::Pem);
@@ -240,7 +232,6 @@ void XtConnect::sslErrors(const QList<QSslCertificate> &certificateChain, const 
 void XtConnect::connectionError(const QString &error)
 {
     qCritical() << "Connection error: " << error;
-    m_model->setNetworkOffline();
     // FIXME: add some nice behavior for reconnecting. Also handle failed logins...
     qFatal("Reconnects not supported yet -> see you.");
 }
@@ -248,7 +239,6 @@ void XtConnect::connectionError(const QString &error)
 void XtConnect::authenticationFailed(const QString &message)
 {
     qCritical() << "Cannot login to the IMAP server: " << message;
-    m_model->setNetworkOffline();
     qFatal("Unable to login to the IMAP server");
 }
 
@@ -257,11 +247,11 @@ void XtConnect::cacheError(const QString &error)
     qCritical() << "Cache error: " << error;
     if ( m_model ) {
         m_cache = 0;
-        m_model->setCache( new Imap::Mailbox::MemoryCache( m_model, QString() ) );
+        m_model->setCache(new Imap::Mailbox::MemoryCache(m_model));
     }
 }
 
-void XtConnect::showConnectionStatus( QObject* parser, Imap::ConnectionState state )
+void XtConnect::showConnectionStatus( uint parser, Imap::ConnectionState state )
 {
     Q_UNUSED( parser );
     using namespace Imap;
@@ -270,6 +260,7 @@ void XtConnect::showConnectionStatus( QObject* parser, Imap::ConnectionState sta
     case CONN_STATE_FETCHING_MSG_METADATA:
     case CONN_STATE_FETCHING_PART:
     case CONN_STATE_SELECTED:
+    case CONN_STATE_SELECTING_WAIT_FOR_CLOSE:
     case CONN_STATE_SELECTING:
         return;
     default:

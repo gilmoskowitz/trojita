@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,10 @@
 
 
 #include "UidSubmitTask.h"
-#include "ItemRoles.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/MailboxTree.h"
+#include "Imap/Model/Model.h"
 #include "KeepMailboxOpenTask.h"
-#include "MailboxTree.h"
-#include "Model.h"
 
 namespace Imap
 {

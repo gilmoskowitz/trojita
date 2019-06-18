@@ -21,22 +21,39 @@
 */
 
 #include "ComposerTextEdit.h"
+#include <QAction>
+#include <QApplication>
+#include <QClipboard>
+#include <QFontDatabase>
+#include <QMenu>
 #include <QMimeData>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QTimer>
 #include <QUrl>
 
+#include "Gui/Util.h"
+#include "UiUtils/Color.h"
+
 ComposerTextEdit::ComposerTextEdit(QWidget *parent) : QTextEdit(parent)
 , m_couldBeSendRequest(false)
+, m_wrapIndicatorOffset(-1)
 {
+    setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     setAcceptRichText(false);
-    setLineWrapMode(QTextEdit::FixedColumnWidth);
+    setLineWrapMode(QTextEdit::WidgetWidth);
     setWordWrapMode(QTextOption::WordWrap);
-    setLineWrapColumnOrWidth(78);
+    m_wrapIndicatorOffset = fontMetrics().averageCharWidth() * 78;
+    QColor c = palette().color(QPalette::Active, foregroundRole());
+    c.setAlpha(26);
+    m_wrapIndicatorColor = UiUtils::tintColor(palette().color(QPalette::Active, backgroundRole()), c);
+
     m_notificationTimer = new QTimer(this);
     m_notificationTimer->setSingleShot(true);
-    connect (m_notificationTimer, SIGNAL(timeout()), SLOT(resetNotification()));
+    connect(m_notificationTimer, &QTimer::timeout, this, &ComposerTextEdit::resetNotification);
+
+    m_pasteQuoted = new QAction(tr("Paste as Quoted Text"), this);
+    connect(m_pasteQuoted, &QAction::triggered, this, &ComposerTextEdit::slotPasteAsQuotation);
 }
 
 void ComposerTextEdit::notify(const QString &n, uint timeout)
@@ -50,6 +67,13 @@ void ComposerTextEdit::notify(const QString &n, uint timeout)
     viewport()->update();
 }
 
+int ComposerTextEdit::idealWidth() const
+{
+    int l,d,r;
+    getContentsMargins(&l, &d, &r, &d);
+    return l + r+ 80*QFontMetrics(font()).averageCharWidth();
+}
+
 void ComposerTextEdit::resetNotification()
 {
     notify(QString());
@@ -59,11 +83,7 @@ bool ComposerTextEdit::canInsertFromMimeData( const QMimeData * source ) const
 {
     QList<QUrl> urls = source->urls();
     foreach (const QUrl &url, urls) {
-#if QT_VERSION >= QT_VERSION_CHECK(4, 8, 0)
         if (url.isLocalFile())
-#else
-        if (url.scheme() == QLatin1String("file"))
-#endif
             return true;
     }
     return QTextEdit::canInsertFromMimeData(source);
@@ -73,11 +93,7 @@ void ComposerTextEdit::insertFromMimeData(const QMimeData *source)
 {
     QList<QUrl> urls = source->urls();
     foreach (const QUrl &url, urls) {
-#if QT_VERSION >= QT_VERSION_CHECK(4, 8, 0)
         if (url.isLocalFile()) {
-#else
-        if (url.scheme() == QLatin1String("file")) {
-#endif
             emit urlsAdded(urls);
             return;
         }
@@ -111,7 +127,16 @@ void ComposerTextEdit::keyReleaseEvent(QKeyEvent *ke)
 
 void ComposerTextEdit::paintEvent(QPaintEvent *pe)
 {
+    // wrap indicator
+    QPainter p(viewport());
+    p.setPen(m_wrapIndicatorColor);
+    const QRect geo = viewport()->geometry();
+    const int x = geo.x() + m_wrapIndicatorOffset;
+    p.drawLine(x, geo.y(), x, geo.x() + viewport()->height());
+    p.end();
+
     QTextEdit::paintEvent(pe);
+
     if ( !m_notification.isEmpty() )
     {
         const int s = width()/5;
@@ -136,4 +161,79 @@ void ComposerTextEdit::paintEvent(QPaintEvent *pe)
         p.drawText(r, Qt::AlignCenter|Qt::TextDontClip, m_notification );
         p.end();
     }
+}
+
+void ComposerTextEdit::contextMenuEvent(QContextMenuEvent *e)
+{
+    QScopedPointer<QMenu> menu(createStandardContextMenu(e->pos()));
+
+    // We would like to place the action next to the existing "Paste" item. How to find it? These actions are created
+    // in Qt4's src/gui/text/qtextcontrol.cpp, QTextControl::createStandardContextMenu.
+    //
+    // The first possibility is to take a look at where are these actions connected; we're looking for a connection
+    // between triggered() and SLOT(paste()). Unfortunately, it seems that these are only available via QObjectPrivate.
+    //
+    // Another possibility is to take a look at the shortcuts. Unfortunately, these "shortcuts" are not really "shortcuts"
+    // in the sense of "being available via QAction::shortcuts or QAction::shortcuts; they are instead (at least in Qt4)
+    // handled via event handlers.
+    //
+    // Thomas suggested a nice hack, trying the QObject::disconnect. Unfortunately, the QAction is not connected to
+    // QTextEdit::paste but to a QTextControl/QWidgetTextControl::paste, and these are private classes, which makes it
+    // a tad complicated to find them via QObject::findChildren().
+    //
+    // The API of QWebView with its standard actions looks like heaven compared to this stuff.
+    //
+    // This is why we take a look at the action's text and look for a particular string. Yes, it's ugly; patches welcome.
+    QAction *pasteAction = 0;
+    QString candidateStringForPaste = QKeySequence(QKeySequence::Paste).toString();
+    // Finally, the API for adding functions leaves something to be desired; QMenu::insertAction takes a pointer to the
+    // "before" thing which is just... annoying here (even though it makes certain amount of sense with addAction which
+    // appends).
+    QAction *followingActionAfterPaste = 0;
+    QList<QAction*> actions = menu->actions();
+    for (QList<QAction*>::const_iterator it = actions.constBegin(); it != actions.constEnd() && !pasteAction; ++it) {
+        if (!candidateStringForPaste.isEmpty() && (*it)->text().contains(candidateStringForPaste)) {
+            pasteAction = *it;
+            if (it + 1 != actions.constEnd()) {
+                followingActionAfterPaste = *(it + 1);
+            }
+            break;
+        }
+    }
+
+    menu->insertAction(followingActionAfterPaste, m_pasteQuoted);
+    if (pasteAction) {
+        m_pasteQuoted->setEnabled(pasteAction->isEnabled());
+    } else {
+        m_pasteQuoted->setEnabled(true);
+    }
+    menu->exec(e->globalPos());
+}
+
+void ComposerTextEdit::slotPasteAsQuotation()
+{
+    QString text = qApp->clipboard()->text();
+    if (text.isEmpty())
+        return;
+
+    QStringList lines = text.split(QLatin1Char('\n'));
+    for (QStringList::iterator it = lines.begin(); it != lines.end(); ++it) {
+        it->remove(QLatin1Char('\r'));
+        if (it->startsWith(QLatin1Char('>'))) {
+            *it = QLatin1Char('>') + *it;
+        } else {
+            *it = QLatin1String("> ") + *it;
+        }
+    }
+    text = lines.join(QStringLiteral("\n"));
+    if (!text.endsWith(QLatin1Char('\n'))) {
+        text += QLatin1Char('\n');
+    }
+
+    QTextCursor cursor = textCursor();
+    cursor.beginEditBlock();
+    cursor.insertBlock();
+    cursor.insertText(text);
+    cursor.endEditBlock();
+    setTextCursor(cursor);
 }

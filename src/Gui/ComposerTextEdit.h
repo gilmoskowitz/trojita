@@ -36,6 +36,8 @@ public:
      * a @p timeout of 0ms shows the notification until it's replaced or reset
      */
     void notify(const QString &n, uint timeout = 0);
+    /** 80em viewport **/
+    int idealWidth() const;
 signals:
     void sendRequest();
     void urlsAdded(QList<QUrl> urls);
@@ -47,10 +49,15 @@ protected:
     void keyReleaseEvent(QKeyEvent *event);
     /** painter reimplementation for notification **/
     void paintEvent(QPaintEvent *pe);
+    virtual void contextMenuEvent(QContextMenuEvent *e);
 private slots:
     void resetNotification();
+    void slotPasteAsQuotation();
 private:
     QString m_notification;
     QTimer *m_notificationTimer;
     bool m_couldBeSendRequest;
+    QAction *m_pasteQuoted;
+    int m_wrapIndicatorOffset;
+    QColor m_wrapIndicatorColor;
 };

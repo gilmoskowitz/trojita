@@ -132,10 +132,10 @@ XSqlQuery::XSqlQuery(QSqlResult * r) :
 }
 
 XSqlQuery::XSqlQuery(const QString &pSql, QSqlDatabase db) :
-  QSqlQuery(QString::null, db)
+  QSqlQuery(QString(), db)
 {
   _data = new XSqlQueryPrivate(this);
-  exec(pSql.toLatin1().data());
+  exec(pSql);
 }
 
 XSqlQuery::XSqlQuery(const QSqlQuery & other) :
@@ -194,7 +194,7 @@ QVariant XSqlQuery::value(const QString & name) const
         int i = _data->_currRecord.indexOf(name);
         if(i<0)
         {
-            QString err = "Column " + name + " not found in record";
+            QString err = QObject::tr("Column %1 not found in record").arg(name);
             qWarning("%s", err.toLocal8Bit().constData());
             return QVariant(_nameErrorValue);
         }
@@ -286,7 +286,7 @@ bool XSqlQuery::prepare(const QString &pSql)
   else
     ret = QSqlQuery::prepare(pSql);
   if(ret && ((driver() && !driver()->hasFeature(QSqlDriver::PreparedQueries)) || (_data && _data->_emulatePrepare)))
-    bindValue(":firstnullfix", QVariant());
+    bindValue(QLatin1String(":firstnullfix"), QVariant());
   return ret;
 }
 

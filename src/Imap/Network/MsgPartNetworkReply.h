@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -31,12 +31,14 @@ namespace Imap
 namespace Network
 {
 
+class MsgPartNetAccessManager;
+
 /** @short Qt-like access to one MIME message part */
 class MsgPartNetworkReply : public QNetworkReply
 {
     Q_OBJECT
 public:
-    MsgPartNetworkReply(QObject *parent, const QPersistentModelIndex &part);
+    MsgPartNetworkReply(MsgPartNetAccessManager *parent, const QPersistentModelIndex &part);
     virtual void abort();
     virtual void close();
     virtual qint64 bytesAvailable() const;

@@ -15,9 +15,9 @@
     <h2>A Qt IMAP e-mail client</h2>
 
     <ul id="menu">
-    <li class="menuitem noactive"><a href="/">About</a></li>
-    <li class="menuitem noactive"><a href="/screenshots.html">Screenshots</a></li>
-    <li class="menuitem active"><a href="/download.html">Downloads</a></li>
+    <li class="menuitem noactive"><a href="index.html">About</a></li>
+    <li class="menuitem noactive"><a href="screenshots.html">Screenshots</a></li>
+    <li class="menuitem active"><a href="download.html">Downloads</a></li>
     <li class="menuitem noactive"><a href="https://projects.flaska.net/projects/trojita/wiki">Wiki</a></li>
     <li class="menuitem noactive"><a href="http://projects.flaska.net/projects/trojita">Development</a></li>
     </ul>
@@ -25,45 +25,55 @@
   </div>
 
   <div id="pagecontent">
-  <div id="sf-donate-button"><a href="http://sourceforge.net/donate/index.php?group_id=339456"><img
+  <div id="sf-donate-button"><a href="https://sourceforge.net/p/trojita/donate/"><img
       src="http://images.sourceforge.net/images/project-support.jpg" width="88"
       height="32" border="0" alt="Support This Project" title="Support This Project" /></a></div>
   <h1>Trojitá, a Qt IMAP e-mail client</h1>
     <h2>Prebuilt Binaries</h2>
+    <h3>Linux</h3>
       <p>Packages for Fedora, RHEL/CentOS/Scientific Linux, OpenSuSE, Debian and Ubuntu are available through the Open Build
       Service (<a
           href="http://software.opensuse.org/download.html?project=home:jkt-gentoo:trojita&amp;package=trojita">releases</a>, <a
           href="http://software.opensuse.org/download.html?project=home:jkt-gentoo:trojita&amp;package=trojita-nightly">nightly
-          builds</a>). Many distributions also ship either build recipes (Gentoo) or ready-made packages (Arch, Mageia,...).
+          builds</a>). Many distributions also ship ready-made packages.
       Please be advised that the packages shipped by third parties might be very outdated.</p>
+    <h3>Windows</h3>
+      <p>There's a compact <a href="http://sourceforge.net/projects/trojita/files/win/Trojita-Setup-0.7.exe/download">installer of the latest release</a>, and you can also download <a href="http://ci-logs.kde.flaska.net/binaries/trojita/win32/rebuilddep/?C=M;O=D">development snapshots</a>.</p>
     <h2>Getting the source</h2>
       <h3>Git</h3>
-	<p>The code is hosted by the <a href="https://projects.kde.org/projects/extragear/pim/trojita">KDE project</a>. You can obtain your local copy by running following command:</p>
+	<p>The code is hosted by the KDE project. You can obtain your local copy by running following command:</p>
 	<code>$ git clone git://<a href="http://quickgit.kde.org/?p=trojita.git">anongit.kde.org/trojita</a></code>
-      <h3>Source tarball</h3>
-	<p>Alternatively, if you don't feel like working with git, you can download this <a href="http://gitorious.org/trojita/trojita/archive-tarball/master">archive with the latest revision</a> of the master branch.</p>
       <h3>Release</h3>
-    <p>If you prefer to work with something more official, you can try the <a
-        href="http://projects.flaska.net/news/show/9">latest release, 0.3.91</a> -- <a
-        href="http://sourceforge.net/projects/trojita/files/src/trojita-0.3.91.tar.bz2/download">download it from SourceForge</a>
-    (<a href="http://sourceforge.net/projects/trojita/files/src/trojita-0.3.91.tar.bz2.asc/download">GPG signature</a>).</p>
+    <p>If you prefer to work with something more official, you can try the latest release, 0.7 -- <a
+        href="http://sourceforge.net/projects/trojita/files/src/trojita-0.7.tar.bz2/download">download it from SourceForge</a>
+    (<a href="http://sourceforge.net/projects/trojita/files/src/trojita-0.7.tar.bz2.asc/download">GPG signature</a>).</p>
     <h2>Building</h2>
       <h3>Dependencies</h3>
       <ul>
-	<li><a href="http://qt.nokia.com/">Qt framework</a> (&gt;= 4.6)</li>
+       <li><a href="http://qt.io/">Qt framework</a> (&gt;= 5.2)</li>
+       <li><a href="http://cmake.org/">CMake</a> (&gt;= 2.8.11)</li>
+       <li>Optional: the <a href="http://zlib.net/">zlib</a> library for the <a href="http://tools.ietf.org/html/rfc4978">IMAP COMPRESS</a> extension</li>
+       <li>Optional: <a href="http://www.complang.org/ragel/">ragel</a> (not required, a pregenerated file is shipped)</li>
+       <li>Optional: <a href="https://github.com/frankosterfeld/qtkeychain">QtKeychain</a> for secure storage of passwords</li>
+       <li>Optional: <a href="https://quickgit.kde.org/?p=gpgmepp.git">GpgME++</a> and <a href="http://www.codesink.org/mimetic_mime_library.html">Mimetic</a> for cryptography (OpenPGP and S/MIME)</li>
       </ul>
+      <p>You will need the development version of these packages if you are building yourself.</p>
       <h3>Compilation</h3>
       <p>Go to the directory created by Git (or unpacked from the archive) and run:</p>
       <code>$ mkdir _build; cd _build <br/>
-      $ qmake CONFIG+=debug ../trojita.pro <br/>
-      $ make -j4</code>
+      $ cmake ..<br/>
+      $ make -j4<br/>
+      $ ctest -j 4 --output-on-failure</code>
     <h2>Running Trojitá</h2>
       <p>After successful compilation, you can run Trojitá from the build directory:</p>
-      <code>$ ./src/Gui/trojita</code>
+      <code>$ ./trojita</code>
     <h2>Reporting bugs &amp; requesting features</h2>
 
       <h3>Issue Tracker</h3>
-	<p>If you encounter a bug in Trojitá, please report it to its <a href="http://projects.flaska.net/projects/trojita/issues">issue tracker</a>. Wishlist items belong to the same place.</p>
+      <p>Bug tracking happens in KDE Bugzilla (see <a
+          href="https://bugs.kde.org/buglist.cgi?bug_status=UNCONFIRMED&amp;bug_status=CONFIRMED&amp;bug_status=ASSIGNED&amp;bug_status=REOPENED&amp;product=trojita">list of open bugreports</a>).
+      If you encounter any problem in Trojitá, please <a href="https://bugs.kde.org/enter_bug.cgi?product=trojita&amp;format=guided">file a bug</a>. Wishlist items belong to the same place.</p>
+      <p>Previously, Trojitá was using Redmine for bug tracking, and some of the bugs are still tracked in the <a href="http://projects.flaska.net/projects/trojita/issues">old tracker</a>.</p>
       <h3>IRC</h3>
 	<p>Trojitá's IRC channel #trojita (<a href="http://webchat.freenode.net/?channels=trojita">connect from
         browser</a>) is hosted on <a href="http://freenode.net/">Freenode</a> network. The main author, jkt, is often there.</p>
@@ -74,16 +84,12 @@
     for general questions. You can also of course <a href="mailto:jkt@flaska.net">mail</a> the author directly.</p>
       <h3>Donations</h3>
     <p>If you happen to like Trojita and would like to express your liking in
-    cash, the project <a href="http://sourceforge.net/donate/index.php?group_id=339456">accepts
+    cash, the project <a href="https://sourceforge.net/p/trojita/donate/">accepts
     donations over SourceForge/PayPal</a>.</p>
     
   </div>
   <div class="push"></div>
   </div>
-    <div id="footer">&copy; 2006 - 2013 <a href="#">Trojitá</a> team. Web done by helb.</div>
-
-
-
-
+  <div id="footer">&copy; 2006 - 2016 <a href="#">Trojitá</a> team. Web done by helb.</div>
 </body>
 </html>

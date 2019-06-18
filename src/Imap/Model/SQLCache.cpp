@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -79,8 +79,8 @@ void SQLCache::init()
     if (! ok)
         num = 10000;
     delayedCommit->setInterval(num);
-    delayedCommit->setObjectName(QString::fromUtf8("delayedCommit-%1").arg(objectName()));
-    connect(delayedCommit, SIGNAL(timeout()), this, SLOT(timeToCommit()));
+    delayedCommit->setObjectName(QStringLiteral("delayedCommit-%1").arg(objectName()));
+    connect(delayedCommit, &QTimer::timeout, this, &SQLCache::timeToCommit);
     if (tooMuchTimeWithoutCommit)
         tooMuchTimeWithoutCommit->deleteLater();
     tooMuchTimeWithoutCommit = new QTimer(this);
@@ -88,8 +88,8 @@ void SQLCache::init()
     if (! ok)
         num = 60000;
     tooMuchTimeWithoutCommit->setInterval(num);
-    tooMuchTimeWithoutCommit->setObjectName(QString::fromUtf8("tooMuchTimeWithoutCommit-%1").arg(objectName()));
-    connect(tooMuchTimeWithoutCommit, SIGNAL(timeout()), this, SLOT(timeToCommit()));
+    tooMuchTimeWithoutCommit->setObjectName(QStringLiteral("tooMuchTimeWithoutCommit-%1").arg(objectName()));
+    connect(tooMuchTimeWithoutCommit, &QTimer::timeout, this, &SQLCache::timeToCommit);
 }
 
 SQLCache::~SQLCache()
@@ -133,7 +133,8 @@ bool SQLCache::open(const QString &name, const QString &fileName)
 #ifdef CACHE_DEBUG
     qDebug() << "SQLCache::open()";
 #endif
-    db = QSqlDatabase::addDatabase(QLatin1String("QSQLITE"), name);
+    db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+    m_cleanup.name = name;
     db.setDatabaseName(fileName);
 
     bool ok = db.open();
@@ -144,15 +145,15 @@ bool SQLCache::open(const QString &name, const QString &fileName)
 
     Common::SqlTransactionAutoAborter txn(&db);
 
-    QSqlRecord trojitaNames = db.record(QLatin1String("trojita"));
-    if (! trojitaNames.contains(QLatin1String("version"))) {
+    QSqlRecord trojitaNames = db.record(QStringLiteral("trojita"));
+    if (! trojitaNames.contains(QStringLiteral("version"))) {
         if (! createTables())
             return false;
     }
 
     QSqlQuery q(QString(), db);
 
-    if (! q.exec(QLatin1String("SELECT version FROM trojita"))) {
+    if (! q.exec(QStringLiteral("SELECT version FROM trojita"))) {
         emitError(tr("Failed to verify version"), q);
         return false;
     }
@@ -167,7 +168,7 @@ bool SQLCache::open(const QString &name, const QString &fileName)
     if (version == 1) {
         TROJITA_SQL_CACHE_CREATE_THREADING
         version = 2;
-        if (! q.exec(QLatin1String("UPDATE trojita SET version = 2;"))) {
+        if (! q.exec(QStringLiteral("UPDATE trojita SET version = 2;"))) {
             emitError(tr("Failed to update cache DB scheme from v1 to v2"), q);
             return false;
         }
@@ -176,37 +177,38 @@ bool SQLCache::open(const QString &name, const QString &fileName)
     if (version == 2 || version == 3) {
         // There's no difference in table layout between v3 and v4, but the mailbox_sync_state has changed due to the new
         // HIGHESTMODSEQ in Mailbox::SyncState, which is why we throw away the old data unconditionally
-        if (!q.exec(QLatin1String("DROP TABLE mailbox_sync_state;"))) {
+        if (!q.exec(QStringLiteral("DROP TABLE mailbox_sync_state;"))) {
             emitError(tr("Failed to drop old table mailbox_sync_state"));
             return false;
         }
         TROJITA_SQL_CACHE_CREATE_SYNC_STATE;
         version = 4;
-        if (! q.exec(QLatin1String("UPDATE trojita SET version = 4;"))) {
+        if (! q.exec(QStringLiteral("UPDATE trojita SET version = 4;"))) {
             emitError(tr("Failed to update cache DB scheme from v2/v3 to v4"), q);
             return false;
         }
     }
 
-    if (version == 4 || version == 5) {
+    if (version == 4 || version == 5 || version == 6) {
         // No difference in table structure between v4 and v5, but the data stored in msg_metadata is different; the UID
         // got removed and INTERNALDATE was added.
         // V6 has added the References and List-Post headers (i.e. a change in the structure of the blobs stored in the DB,
         // but transparent on the SQL level), and also changed the DB structure by adding a date specifying how recently
         // a given message was accessed (which was needed for cache lifetime management).
-        if (!q.exec(QLatin1String("DROP TABLE msg_metadata;"))) {
+        // V7 changed the sizes to quint64 (from uint), so the message metadata again changed
+        if (!q.exec(QStringLiteral("DROP TABLE msg_metadata;"))) {
             emitError(tr("Failed to drop old table msg_metadata"));
             return false;
         }
         TROJITA_SQL_CACHE_CREATE_MSG_METADATA;
-        version = 6;
-        if (! q.exec(QLatin1String("UPDATE trojita SET version = 6;"))) {
-            emitError(tr("Failed to update cache DB scheme from v4/v5 to v6"), q);
+        version = 7;
+        if (! q.exec(QStringLiteral("UPDATE trojita SET version = 7;"))) {
+            emitError(tr("Failed to update cache DB scheme from v4/v5/v6 to v7"), q);
             return false;
         }
     }
 
-    if (version != 6) {
+    if (version != 7) {
         emitError(tr("Unknown version"));
         return false;
     }
@@ -227,15 +229,15 @@ bool SQLCache::createTables()
 {
     QSqlQuery q(QString(), db);
 
-    if (! q.exec(QLatin1String("CREATE TABLE trojita ( version STRING NOT NULL )"))) {
+    if (! q.exec(QStringLiteral("CREATE TABLE trojita ( version STRING NOT NULL )"))) {
         emitError(tr("Failed to prepare table structures"), q);
         return false;
     }
-    if (! q.exec(QLatin1String("INSERT INTO trojita ( version ) VALUES ( 6 )"))) {
+    if (! q.exec(QStringLiteral("INSERT INTO trojita ( version ) VALUES ( 6 )"))) {
         emitError(tr("Can't store version info"), q);
         return false;
     }
-    if (! q.exec(QLatin1String(
+    if (! q.exec(QStringLiteral(
                      "CREATE TABLE child_mailboxes ( "
                      "mailbox STRING NOT NULL PRIMARY KEY, "
                      "parent STRING NOT NULL, "
@@ -247,7 +249,7 @@ bool SQLCache::createTables()
         return false;
     }
 
-    if (! q.exec(QLatin1String("CREATE TABLE uid_mapping ( "
+    if (! q.exec(QStringLiteral("CREATE TABLE uid_mapping ( "
                                "mailbox STRING NOT NULL PRIMARY KEY, "
                                "mapping BINARY"
                                " )"))) {
@@ -257,7 +259,7 @@ bool SQLCache::createTables()
 
     TROJITA_SQL_CACHE_CREATE_MSG_METADATA;
 
-    if (! q.exec(QLatin1String("CREATE TABLE flags ("
+    if (! q.exec(QStringLiteral("CREATE TABLE flags ("
                                "mailbox STRING NOT NULL, "
                                "uid INT NOT NULL, "
                                "flags BINARY, "
@@ -266,7 +268,7 @@ bool SQLCache::createTables()
         emitError(tr("Can't create table flags"), q);
     }
 
-    if (! q.exec(QLatin1String("CREATE TABLE parts ("
+    if (! q.exec(QStringLiteral("CREATE TABLE parts ("
                                "mailbox STRING NOT NULL, "
                                "uid INT NOT NULL, "
                                "part_id BINARY, "
@@ -285,31 +287,37 @@ bool SQLCache::createTables()
 bool SQLCache::prepareQueries()
 {
     queryChildMailboxes = QSqlQuery(db);
-    if (! queryChildMailboxes.prepare("SELECT mailbox, separator, flags FROM child_mailboxes WHERE parent = ?")) {
+    if (! queryChildMailboxes.prepare(QStringLiteral("SELECT mailbox, separator, flags FROM child_mailboxes WHERE parent = ?"))) {
         emitError(tr("Failed to prepare queryChildMailboxes"), queryChildMailboxes);
         return false;
     }
 
     queryChildMailboxesFresh = QSqlQuery(db);
-    if (! queryChildMailboxesFresh.prepare(QLatin1String("SELECT mailbox FROM child_mailboxes WHERE parent = ? LIMIT 1"))) {
+    if (! queryChildMailboxesFresh.prepare(QStringLiteral("SELECT mailbox FROM child_mailboxes WHERE parent = ? LIMIT 1"))) {
         emitError(tr("Failed to prepare queryChildMailboxesFresh"), queryChildMailboxesFresh);
         return false;
     }
 
+    queryRemoveChildMailboxes = QSqlQuery(db);
+    if (!queryRemoveChildMailboxes.prepare(QStringLiteral("DELETE FROM child_mailboxes WHERE parent = ?"))) {
+        emitError(tr("Failed to prepare queryRemoveChildMailboxes"), queryRemoveChildMailboxes);
+        return false;
+    }
+
     querySetChildMailboxes = QSqlQuery(db);
-    if (! querySetChildMailboxes.prepare(QLatin1String("INSERT OR REPLACE INTO child_mailboxes ( mailbox, parent, separator, flags ) VALUES (?, ?, ?, ?)"))) {
+    if (! querySetChildMailboxes.prepare(QStringLiteral("INSERT OR REPLACE INTO child_mailboxes ( mailbox, parent, separator, flags ) VALUES (?, ?, ?, ?)"))) {
         emitError(tr("Failed to prepare querySetChildMailboxes"), querySetChildMailboxes);
         return false;
     }
 
     queryMailboxSyncState = QSqlQuery(db);
-    if (! queryMailboxSyncState.prepare(QLatin1String("SELECT sync_state FROM mailbox_sync_state WHERE mailbox = ?"))) {
+    if (! queryMailboxSyncState.prepare(QStringLiteral("SELECT sync_state FROM mailbox_sync_state WHERE mailbox = ?"))) {
         emitError(tr("Failed to prepare queryMailboxSyncState"), queryMailboxSyncState);
         return false;
     }
 
     querySetMailboxSyncState = QSqlQuery(db);
-    if (! querySetMailboxSyncState.prepare(QLatin1String("INSERT OR REPLACE INTO mailbox_sync_state "
+    if (! querySetMailboxSyncState.prepare(QStringLiteral("INSERT OR REPLACE INTO mailbox_sync_state "
                                            "( mailbox, sync_state ) "
                                            "VALUES ( ?, ? )"))) {
         emitError(tr("Failed to prepare querySetMailboxSyncState"), querySetMailboxSyncState);
@@ -317,127 +325,139 @@ bool SQLCache::prepareQueries()
     }
 
     queryUidMapping = QSqlQuery(db);
-    if (! queryUidMapping.prepare(QLatin1String("SELECT mapping FROM uid_mapping WHERE mailbox = ?"))) {
+    if (! queryUidMapping.prepare(QStringLiteral("SELECT mapping FROM uid_mapping WHERE mailbox = ?"))) {
         emitError(tr("Failed to prepare queryUidMapping"), queryUidMapping);
         return false;
     }
 
     querySetUidMapping = QSqlQuery(db);
-    if (! querySetUidMapping.prepare(QLatin1String("INSERT OR REPLACE INTO uid_mapping (mailbox, mapping) VALUES  ( ?, ? )"))) {
+    if (! querySetUidMapping.prepare(QStringLiteral("INSERT OR REPLACE INTO uid_mapping (mailbox, mapping) VALUES  ( ?, ? )"))) {
         emitError(tr("Failed to prepare querySetUidMapping"), querySetUidMapping);
         return false;
     }
 
     queryClearUidMapping = QSqlQuery(db);
-    if (! queryClearUidMapping.prepare(QLatin1String("DELETE FROM uid_mapping WHERE mailbox = ?"))) {
+    if (! queryClearUidMapping.prepare(QStringLiteral("DELETE FROM uid_mapping WHERE mailbox = ?"))) {
         emitError(tr("Failed to prepare queryClearUidMapping"), queryClearUidMapping);
         return false;
     }
 
     queryMessageMetadata = QSqlQuery(db);
-    if (! queryMessageMetadata.prepare(QLatin1String("SELECT data, lastAccessDate FROM msg_metadata WHERE mailbox = ? AND uid = ?"))) {
+    if (! queryMessageMetadata.prepare(QStringLiteral("SELECT data, lastAccessDate FROM msg_metadata WHERE mailbox = ? AND uid = ?"))) {
         emitError(tr("Failed to prepare queryMessageMetadata"), queryMessageMetadata);
         return false;
     }
 
     queryAccessMessageMetadata = QSqlQuery(db);
-    if (!queryAccessMessageMetadata.prepare(QLatin1String("UPDATE msg_metadata SET lastAccessDate = ? WHERE mailbox = ? AND uid = ?"))) {
+    if (!queryAccessMessageMetadata.prepare(QStringLiteral("UPDATE msg_metadata SET lastAccessDate = ? WHERE mailbox = ? AND uid = ?"))) {
         emitError(tr("Failed to prepare queryAccssMessageMetadata"), queryAccessMessageMetadata);
         return false;
     }
 
     querySetMessageMetadata = QSqlQuery(db);
-    if (! querySetMessageMetadata.prepare(QLatin1String("INSERT OR REPLACE INTO msg_metadata ( mailbox, uid, data, lastAccessDate ) VALUES ( ?, ?, ?, ? )"))) {
+    if (! querySetMessageMetadata.prepare(QStringLiteral("INSERT OR REPLACE INTO msg_metadata ( mailbox, uid, data, lastAccessDate ) VALUES ( ?, ?, ?, ? )"))) {
         emitError(tr("Failed to prepare querySetMessageMetadata"), querySetMessageMetadata);
         return false;
     }
 
     queryMessageFlags = QSqlQuery(db);
-    if (! queryMessageFlags.prepare(QLatin1String("SELECT flags FROM flags WHERE mailbox = ? AND uid = ?"))) {
+    if (! queryMessageFlags.prepare(QStringLiteral("SELECT flags FROM flags WHERE mailbox = ? AND uid = ?"))) {
         emitError(tr("Failed to prepare queryMessageFlags"), queryMessageFlags);
         return false;
     }
 
     querySetMessageFlags = QSqlQuery(db);
-    if (! querySetMessageFlags.prepare(QLatin1String("INSERT OR REPLACE INTO flags ( mailbox, uid, flags ) VALUES ( ?, ?, ? )"))) {
+    if (! querySetMessageFlags.prepare(QStringLiteral("INSERT OR REPLACE INTO flags ( mailbox, uid, flags ) VALUES ( ?, ?, ? )"))) {
         emitError(tr("Failed to prepare querySetMessageFlags"), querySetMessageFlags);
         return false;
     }
 
     queryClearAllMessages1 = QSqlQuery(db);
-    if (! queryClearAllMessages1.prepare(QLatin1String("DELETE FROM msg_metadata WHERE mailbox = ?"))) {
+    if (! queryClearAllMessages1.prepare(QStringLiteral("DELETE FROM msg_metadata WHERE mailbox = ?"))) {
         emitError(tr("Failed to prepare queryClearAllMessages1"), queryClearAllMessages1);
         return false;
     }
 
     queryClearAllMessages2 = QSqlQuery(db);
-    if (! queryClearAllMessages2.prepare(QLatin1String("DELETE FROM flags WHERE mailbox = ?"))) {
+    if (! queryClearAllMessages2.prepare(QStringLiteral("DELETE FROM flags WHERE mailbox = ?"))) {
         emitError(tr("Failed to prepare queryClearAllMessages2"), queryClearAllMessages2);
         return false;
     }
 
     queryClearAllMessages3 = QSqlQuery(db);
-    if (! queryClearAllMessages3.prepare(QLatin1String("DELETE FROM parts WHERE mailbox = ?"))) {
-        emitError(tr("Failed to prepare queryClearAllMessages3"), queryClearAllMessages2);
+    if (! queryClearAllMessages3.prepare(QStringLiteral("DELETE FROM parts WHERE mailbox = ?"))) {
+        emitError(tr("Failed to prepare queryClearAllMessages3"), queryClearAllMessages3);
+        return false;
+    }
+
+    queryClearAllMessages4 = QSqlQuery(db);
+    if (! queryClearAllMessages4.prepare(QStringLiteral("DELETE FROM msg_threading WHERE mailbox = ?"))) {
+        emitError(tr("Failed to prepare queryClearAllMessages4"), queryClearAllMessages4);
         return false;
     }
 
     queryClearMessage1 = QSqlQuery(db);
-    if (! queryClearMessage1.prepare(QLatin1String("DELETE FROM msg_metadata WHERE mailbox = ? AND uid = ?"))) {
+    if (! queryClearMessage1.prepare(QStringLiteral("DELETE FROM msg_metadata WHERE mailbox = ? AND uid = ?"))) {
         emitError(tr("Failed to prepare queryClearMessage1"), queryClearMessage1);
         return false;
     }
 
     queryClearMessage2 = QSqlQuery(db);
-    if (! queryClearMessage2.prepare(QLatin1String("DELETE FROM flags WHERE mailbox = ? AND uid = ?"))) {
+    if (! queryClearMessage2.prepare(QStringLiteral("DELETE FROM flags WHERE mailbox = ? AND uid = ?"))) {
         emitError(tr("Failed to prepare queryClearMessage2"), queryClearMessage2);
         return false;
     }
 
     queryClearMessage3 = QSqlQuery(db);
-    if (! queryClearMessage3.prepare(QLatin1String("DELETE FROM parts WHERE mailbox = ? AND uid = ?"))) {
+    if (! queryClearMessage3.prepare(QStringLiteral("DELETE FROM parts WHERE mailbox = ? AND uid = ?"))) {
         emitError(tr("Failed to prepare queryClearMessage3"), queryClearMessage3);
         return false;
     }
 
     queryMessagePart = QSqlQuery(db);
-    if (! queryMessagePart.prepare(QLatin1String("SELECT data FROM parts WHERE mailbox = ? AND uid = ? AND part_id = ?"))) {
+    if (! queryMessagePart.prepare(QStringLiteral("SELECT data FROM parts WHERE mailbox = ? AND uid = ? AND part_id = ?"))) {
         emitError(tr("Failed to prepare queryMessagePart"), queryMessagePart);
         return false;
     }
 
     querySetMessagePart = QSqlQuery(db);
-    if (! querySetMessagePart.prepare(QLatin1String("INSERT OR REPLACE INTO parts ( mailbox, uid, part_id, data ) VALUES (?, ?, ?, ?)"))) {
+    if (! querySetMessagePart.prepare(QStringLiteral("INSERT OR REPLACE INTO parts ( mailbox, uid, part_id, data ) VALUES (?, ?, ?, ?)"))) {
         emitError(tr("Failed to prepare querySetMessagePart"), querySetMessagePart);
         return false;
     }
 
+    queryForgetMessagePart = QSqlQuery(db);
+    if (! queryForgetMessagePart.prepare(QStringLiteral("DELETE FROM parts WHERE mailbox = ? AND uid = ? AND part_id = ?"))) {
+        emitError(tr("Failed to prepare queryForgetMessagePart"), queryForgetMessagePart);
+        return false;
+    }
+
     queryMessageThreading = QSqlQuery(db);
-    if (! queryMessageThreading.prepare(QLatin1String("SELECT threading FROM msg_threading WHERE mailbox = ?"))) {
+    if (! queryMessageThreading.prepare(QStringLiteral("SELECT threading FROM msg_threading WHERE mailbox = ?"))) {
         emitError(tr("Failed to prepare queryMessageThreading"), queryMessageThreading);
         return false;
     }
 
     querySetMessageThreading = QSqlQuery(db);
-    if (! querySetMessageThreading.prepare(QLatin1String("INSERT OR REPLACE INTO msg_threading (mailbox, threading) VALUES  ( ?, ? )"))) {
+    if (! querySetMessageThreading.prepare(QStringLiteral("INSERT OR REPLACE INTO msg_threading (mailbox, threading) VALUES  ( ?, ? )"))) {
         emitError(tr("Failed to prepare querySetMessageThreading"), querySetMessageThreading);
         return false;
     }
 
 #ifdef CACHE_DEBUG
-    qDebug() << "SQLCache::_prepareQueries() succeded";
+    qDebug() << "SQLCache::_prepareQueries() succeeded";
 #endif
     return true;
 }
 
 void SQLCache::emitError(const QString &message, const QSqlQuery &query) const
 {
-    emitError(QString::fromUtf8("SQLCache: Query Error: %1: %2").arg(message, query.lastError().text()));
+    emitError(QStringLiteral("SQLCache: Query Error: %1: %2").arg(message, query.lastError().text()));
 }
 
 void SQLCache::emitError(const QString &message, const QSqlDatabase &database) const
 {
-    emitError(QString::fromUtf8("SQLCache: DB Error: %1: %2").arg(message, database.lastError().text()));
+    emitError(QStringLiteral("SQLCache: DB Error: %1: %2").arg(message, database.lastError().text()));
 }
 
 void SQLCache::emitError(const QString &message) const
@@ -449,7 +469,7 @@ void SQLCache::emitError(const QString &message) const
 QList<MailboxMetadata> SQLCache::childMailboxes(const QString &mailbox) const
 {
     QList<MailboxMetadata> res;
-    queryChildMailboxes.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryChildMailboxes.bindValue(0, mailboxName(mailbox));
     if (! queryChildMailboxes.exec()) {
         emitError(tr("Query queryChildMailboxes failed"), queryChildMailboxes);
         return res;
@@ -472,7 +492,7 @@ QList<MailboxMetadata> SQLCache::childMailboxes(const QString &mailbox) const
 
 bool SQLCache::childMailboxesFresh(const QString &mailbox) const
 {
-    queryChildMailboxesFresh.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryChildMailboxesFresh.bindValue(0, mailboxName(mailbox));
     if (! queryChildMailboxesFresh.exec()) {
         emitError(tr("Query queryChildMailboxesFresh failed"), queryChildMailboxesFresh);
         return false;
@@ -486,17 +506,21 @@ void SQLCache::setChildMailboxes(const QString &mailbox, const QList<MailboxMeta
     qDebug() << "Setting child mailboxes for" << mailbox;
 #endif
     touchingDB();
-    QString myMailbox = mailbox.isEmpty() ? QLatin1String("") : mailbox;
     QVariantList mailboxFields, parentFields, separatorFields, flagsFelds;
     Q_FOREACH(const MailboxMetadata& item, data) {
         mailboxFields << item.mailbox;
-        parentFields << myMailbox;
+        parentFields << mailboxName(mailbox);
         separatorFields << item.separator;
         QByteArray buf;
         QDataStream stream(&buf, QIODevice::ReadWrite);
         stream.setVersion(streamVersion);
         stream << item.flags;
         flagsFelds << buf;
+    }
+    queryRemoveChildMailboxes.bindValue(0, mailboxName(mailbox));
+    if (!queryRemoveChildMailboxes.exec()) {
+        emitError(tr("Query queryRemoveChildMailboxes failed"), queryRemoveChildMailboxes);
+        return;
     }
     querySetChildMailboxes.bindValue(0, mailboxFields);
     querySetChildMailboxes.bindValue(1, parentFields);
@@ -511,7 +535,7 @@ void SQLCache::setChildMailboxes(const QString &mailbox, const QList<MailboxMeta
 SyncState SQLCache::mailboxSyncState(const QString &mailbox) const
 {
     SyncState res;
-    queryMailboxSyncState.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryMailboxSyncState.bindValue(0, mailboxName(mailbox));
     if (! queryMailboxSyncState.exec()) {
         emitError(tr("Query queryMailboxSyncState failed"), queryMailboxSyncState);
         return res;
@@ -531,7 +555,7 @@ void SQLCache::setMailboxSyncState(const QString &mailbox, const SyncState &stat
     qDebug() << "Setting sync state for" << mailbox;
 #endif
     touchingDB();
-    querySetMailboxSyncState.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    querySetMailboxSyncState.bindValue(0, mailboxName(mailbox));
     QByteArray buf;
     QDataStream stream(&buf, QIODevice::ReadWrite);
     stream.setVersion(streamVersion);
@@ -543,10 +567,10 @@ void SQLCache::setMailboxSyncState(const QString &mailbox, const SyncState &stat
     }
 }
 
-QList<uint> SQLCache::uidMapping(const QString &mailbox) const
+Imap::Uids SQLCache::uidMapping(const QString &mailbox) const
 {
-    QList<uint> res;
-    queryUidMapping.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    Imap::Uids res;
+    queryUidMapping.bindValue(0, mailboxName(mailbox));
     if (! queryUidMapping.exec()) {
         emitError(tr("Query queryUidMapping failed"), queryUidMapping);
         return res;
@@ -560,13 +584,13 @@ QList<uint> SQLCache::uidMapping(const QString &mailbox) const
     return res;
 }
 
-void SQLCache::setUidMapping(const QString &mailbox, const QList<uint> &seqToUid)
+void SQLCache::setUidMapping(const QString &mailbox, const Imap::Uids &seqToUid)
 {
 #ifdef CACHE_DEBUG
     qDebug() << "Setting UID mapping for" << mailbox;
 #endif
     touchingDB();
-    querySetUidMapping.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    querySetUidMapping.bindValue(0, mailboxName(mailbox));
     QByteArray buf;
     QDataStream stream(&buf, QIODevice::ReadWrite);
     stream.setVersion(streamVersion);
@@ -583,7 +607,7 @@ void SQLCache::clearUidMapping(const QString &mailbox)
     qDebug() << "Clearing UID mapping for" << mailbox;
 #endif
     touchingDB();
-    queryClearUidMapping.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryClearUidMapping.bindValue(0, mailboxName(mailbox));
     if (! queryClearUidMapping.exec()) {
         emitError(tr("Query queryClearUidMapping failed"), queryClearUidMapping);
     }
@@ -595,9 +619,10 @@ void SQLCache::clearAllMessages(const QString &mailbox)
     qDebug() << "Clearing all messages from" << mailbox;
 #endif
     touchingDB();
-    queryClearAllMessages1.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
-    queryClearAllMessages2.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
-    queryClearAllMessages3.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryClearAllMessages1.bindValue(0, mailboxName(mailbox));
+    queryClearAllMessages2.bindValue(0, mailboxName(mailbox));
+    queryClearAllMessages3.bindValue(0, mailboxName(mailbox));
+    queryClearAllMessages4.bindValue(0, mailboxName(mailbox));
     if (! queryClearAllMessages1.exec()) {
         emitError(tr("Query queryClearAllMessages1 failed"), queryClearAllMessages1);
     }
@@ -607,6 +632,10 @@ void SQLCache::clearAllMessages(const QString &mailbox)
     if (! queryClearAllMessages3.exec()) {
         emitError(tr("Query queryClearAllMessages3 failed"), queryClearAllMessages3);
     }
+    if (! queryClearAllMessages4.exec()) {
+        emitError(tr("Query queryClearAllMessages4 failed"), queryClearAllMessages4);
+    }
+    clearUidMapping(mailbox);
 }
 
 void SQLCache::clearMessage(const QString mailbox, uint uid)
@@ -615,11 +644,11 @@ void SQLCache::clearMessage(const QString mailbox, uint uid)
     qDebug() << "Clearing message" << uid << "from" << mailbox;
 #endif
     touchingDB();
-    queryClearMessage1.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryClearMessage1.bindValue(0, mailboxName(mailbox));
     queryClearMessage1.bindValue(1, uid);
-    queryClearMessage2.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryClearMessage2.bindValue(0, mailboxName(mailbox));
     queryClearMessage2.bindValue(1, uid);
-    queryClearMessage3.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryClearMessage3.bindValue(0, mailboxName(mailbox));
     queryClearMessage3.bindValue(1, uid);
     if (! queryClearMessage1.exec()) {
         emitError(tr("Query queryClearMessage1 failed"), queryClearMessage1);
@@ -632,10 +661,10 @@ void SQLCache::clearMessage(const QString mailbox, uint uid)
     }
 }
 
-QStringList SQLCache::msgFlags(const QString &mailbox, uint uid) const
+QStringList SQLCache::msgFlags(const QString &mailbox, const uint uid) const
 {
     QStringList res;
-    queryMessageFlags.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryMessageFlags.bindValue(0, mailboxName(mailbox));
     queryMessageFlags.bindValue(1, uid);
     if (! queryMessageFlags.exec()) {
         emitError(tr("Query queryMessageFlags failed"), queryMessageFlags);
@@ -650,13 +679,13 @@ QStringList SQLCache::msgFlags(const QString &mailbox, uint uid) const
     return res;
 }
 
-void SQLCache::setMsgFlags(const QString &mailbox, uint uid, const QStringList &flags)
+void SQLCache::setMsgFlags(const QString &mailbox, const uint uid, const QStringList &flags)
 {
 #ifdef CACHE_DEBUG
     qDebug() << "Updating flags for" << mailbox << uid;
 #endif
     touchingDB();
-    querySetMessageFlags.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    querySetMessageFlags.bindValue(0, mailboxName(mailbox));
     querySetMessageFlags.bindValue(1, uid);
     QByteArray buf;
     QDataStream stream(&buf, QIODevice::ReadWrite);
@@ -671,7 +700,7 @@ void SQLCache::setMsgFlags(const QString &mailbox, uint uid, const QStringList &
 AbstractCache::MessageDataBundle SQLCache::messageMetadata(const QString &mailbox, uint uid) const
 {
     AbstractCache::MessageDataBundle res;
-    queryMessageMetadata.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryMessageMetadata.bindValue(0, mailboxName(mailbox));
     queryMessageMetadata.bindValue(1, uid);
     if (! queryMessageMetadata.exec()) {
         emitError(tr("Query queryMessageMetadata failed"), queryMessageMetadata);
@@ -689,7 +718,7 @@ AbstractCache::MessageDataBundle SQLCache::messageMetadata(const QString &mailbo
             int currentDiff = accessingThresholdDate.daysTo(QDate::currentDate());
             if (lastAccessTimestamp < currentDiff - m_updateAccessIfOlder) {
                 queryAccessMessageMetadata.bindValue(0, currentDiff);
-                queryAccessMessageMetadata.bindValue(1, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+                queryAccessMessageMetadata.bindValue(1, mailboxName(mailbox));
                 queryAccessMessageMetadata.bindValue(2, uid);
                 if (!queryAccessMessageMetadata.exec()) {
                     emitError(tr("Query queryAccessMessageMetadata failed"), queryAccessMessageMetadata);
@@ -701,14 +730,14 @@ AbstractCache::MessageDataBundle SQLCache::messageMetadata(const QString &mailbo
     return res;
 }
 
-void SQLCache::setMessageMetadata(const QString &mailbox, uint uid, const MessageDataBundle &metadata)
+void SQLCache::setMessageMetadata(const QString &mailbox, const uint uid, const MessageDataBundle &metadata)
 {
 #ifdef CACHE_DEBUG
     qDebug() << "Setting message metadata for" << uid << mailbox;
 #endif
     touchingDB();
     // Order of values: mailbox, uid, data
-    querySetMessageMetadata.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    querySetMessageMetadata.bindValue(0, mailboxName(mailbox));
     querySetMessageMetadata.bindValue(1, uid);
     QByteArray buf;
     QDataStream stream(&buf, QIODevice::ReadWrite);
@@ -722,10 +751,10 @@ void SQLCache::setMessageMetadata(const QString &mailbox, uint uid, const Messag
     }
 }
 
-QByteArray SQLCache::messagePart(const QString &mailbox, uint uid, const QString &partId) const
+QByteArray SQLCache::messagePart(const QString &mailbox, const uint uid, const QByteArray &partId) const
 {
     QByteArray res;
-    queryMessagePart.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryMessagePart.bindValue(0, mailboxName(mailbox));
     queryMessagePart.bindValue(1, uid);
     queryMessagePart.bindValue(2, partId);
     if (! queryMessagePart.exec()) {
@@ -739,13 +768,13 @@ QByteArray SQLCache::messagePart(const QString &mailbox, uint uid, const QString
     return res;
 }
 
-void SQLCache::setMsgPart(const QString &mailbox, uint uid, const QString &partId, const QByteArray &data)
+void SQLCache::setMsgPart(const QString &mailbox, const uint uid, const QByteArray &partId, const QByteArray &data)
 {
 #ifdef CACHE_DEBUG
     qDebug() << "Saving message part" << partId << uid << mailbox;
 #endif
     touchingDB();
-    querySetMessagePart.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    querySetMessagePart.bindValue(0, mailboxName(mailbox));
     querySetMessagePart.bindValue(1, uid);
     querySetMessagePart.bindValue(2, partId);
     querySetMessagePart.bindValue(3, qCompress(data));
@@ -754,10 +783,24 @@ void SQLCache::setMsgPart(const QString &mailbox, uint uid, const QString &partI
     }
 }
 
+void SQLCache::forgetMessagePart(const QString &mailbox, const uint uid, const QByteArray &partId)
+{
+#ifdef CACHE_DEBUG
+    qDebug() << "Forgetting message part" << partId << uid << mailbox;
+#endif
+    touchingDB();
+    queryForgetMessagePart.bindValue(0, mailboxName(mailbox));
+    queryForgetMessagePart.bindValue(1, uid);
+    queryForgetMessagePart.bindValue(2, partId);
+    if (! queryForgetMessagePart.exec()) {
+        emitError(tr("Query queryForgetMessagePart failed"), queryForgetMessagePart);
+    }
+}
+
 QVector<Imap::Responses::ThreadingNode> SQLCache::messageThreading(const QString &mailbox)
 {
     QVector<Imap::Responses::ThreadingNode> res;
-    queryMessageThreading.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    queryMessageThreading.bindValue(0, mailboxName(mailbox));
     if (! queryMessageThreading.exec()) {
         emitError(tr("Query queryMessageThreading failed"), queryMessageThreading);
         return res;
@@ -776,7 +819,7 @@ void SQLCache::setMessageThreading(const QString &mailbox, const QVector<Imap::R
     qDebug() << "Setting threading for" << mailbox;
 #endif
     touchingDB();
-    querySetMessageThreading.bindValue(0, mailbox.isEmpty() ? QLatin1String("") : mailbox);
+    querySetMessageThreading.bindValue(0, mailboxName(mailbox));
     QByteArray buf;
     QDataStream stream(&buf, QIODevice::ReadWrite);
     stream.setVersion(streamVersion);
@@ -817,6 +860,19 @@ void SQLCache::setRenewalThreshold(const int days)
     m_updateAccessIfOlder = days;
 }
 
+/** @short Return a proper represenation of the mailbox name to be used in the SQL queries
+
+A null QString is represented as NIL, which makes our cache unhappy.
+*/
+QString SQLCache::mailboxName(const QString &mailbox)
+{
+    return mailbox.isEmpty() ? QLatin1String("") : mailbox;
+}
+
+DbConnectionCleanup::~DbConnectionCleanup()
+{
+    QSqlDatabase::removeDatabase(name);
+}
 
 }
 }

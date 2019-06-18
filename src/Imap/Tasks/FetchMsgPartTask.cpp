@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,22 +22,23 @@
 
 
 #include "FetchMsgPartTask.h"
-#include "ItemRoles.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
-#include "MailboxTree.h"
 
 namespace Imap
 {
 namespace Mailbox
 {
 
-FetchMsgPartTask::FetchMsgPartTask(Model *model, const QModelIndex &mailbox, const QList<uint> &uids, const QStringList &parts):
+FetchMsgPartTask::FetchMsgPartTask(Model *model, const QModelIndex &mailbox, const Uids &uids, const QList<QByteArray> &parts):
     ImapTask(model), uids(uids), parts(parts), mailboxIndex(mailbox)
 {
     Q_ASSERT(!uids.isEmpty());
     conn = model->findTaskResponsibleFor(mailboxIndex);
     conn->addDependentTask(this);
+    connect(this, &ImapTask::failed, this, &FetchMsgPartTask::markPendingItemsUnavailable);
 }
 
 void FetchMsgPartTask::perform()
@@ -47,14 +48,14 @@ void FetchMsgPartTask::perform()
 
     IMAP_TASK_CHECK_ABORT_DIE;
 
-    Sequence seq = Sequence::fromList(uids);
+    Sequence seq = Sequence::fromVector(uids);
     tag = parser->uidFetch(seq, parts);
 }
 
 bool FetchMsgPartTask::handleFetch(const Imap::Responses::Fetch *const resp)
 {
     if (!mailboxIndex.isValid()) {
-        _failed("Mailbox disappeared");
+        _failed(tr("Mailbox disappeared"));
         return false;
     }
 
@@ -70,27 +71,18 @@ bool FetchMsgPartTask::handleStateHelper(const Imap::Responses::State *const res
         return false;
 
     if (!mailboxIndex.isValid()) {
-        _failed("Mailbox disappeared");
+        _failed(tr("Mailbox disappeared"));
         return false;
     }
 
     if (resp->tag == tag) {
+        markPendingItemsUnavailable();
         if (resp->kind == Responses::OK) {
-            log("Fetched parts", Common::LOG_MESSAGES);
-            TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
-            Q_ASSERT(mailbox);
-            QList<TreeItemMessage *> messages = model->findMessagesByUids(mailbox, uids);
-            Q_FOREACH(TreeItemMessage *message, messages) {
-                Q_FOREACH(const QString &partId, parts) {
-                    log("Fetched part" + partId, Common::LOG_MESSAGES);
-                    model->finalizeFetchPart(mailbox, message->row() + 1, partId);
-                }
-            }
+            log(QStringLiteral("Fetched parts"), Common::LOG_MESSAGES);
             model->changeConnectionState(parser, CONN_STATE_SELECTED);
             _completed();
         } else {
-            // FIXME: error handling
-            _failed("Part fetch failed");
+            _failed(tr("Part fetch failed"));
         }
         return true;
     } else {
@@ -101,17 +93,41 @@ bool FetchMsgPartTask::handleStateHelper(const Imap::Responses::State *const res
 QString FetchMsgPartTask::debugIdentification() const
 {
     if (!mailboxIndex.isValid())
-        return QLatin1String("[invalid mailbox]");
+        return QStringLiteral("[invalid mailbox]");
 
     Q_ASSERT(!uids.isEmpty());
-    return QString::fromUtf8("%1: parts %2 for UIDs %3")
-           .arg(mailboxIndex.data(RoleMailboxName).toString(), parts.join(QLatin1String(", ")),
-                Sequence::fromList(uids).toByteArray());
+    QStringList buf;
+    Q_FOREACH(const QByteArray &item, parts) {
+        buf << QString::fromUtf8(item);
+    }
+    return QStringLiteral("%1: parts %2 for UIDs %3")
+           .arg(mailboxIndex.data(RoleMailboxName).toString(), buf.join(QStringLiteral(", ")),
+                QString::fromUtf8(Sequence::fromVector(uids).toByteArray()));
 }
 
 QVariant FetchMsgPartTask::taskData(const int role) const
 {
     return role == RoleTaskCompactName ? QVariant(tr("Downloading messages")) : QVariant();
+}
+
+/** @short We're dead, the data which hasn't arrived so far won't arrive in future unless a reset happens */
+void FetchMsgPartTask::markPendingItemsUnavailable()
+{
+    if (!mailboxIndex.isValid())
+        return;
+
+    TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
+    Q_ASSERT(mailbox);
+    QList<TreeItemMessage *> messages = model->findMessagesByUids(mailbox, uids);
+    Q_FOREACH(TreeItemMessage *message, messages) {
+        Q_FOREACH(const QByteArray &partId, parts) {
+            if (model->finalizeFetchPart(mailbox, message->row() + 1, partId)) {
+                log(QLatin1String("Fetched part ") + QString::fromUtf8(partId), Common::LOG_MESSAGES);
+            } else {
+                log(QLatin1String("Received no data for part ") + QString::fromUtf8(partId), Common::LOG_MESSAGES);
+            }
+        }
+    }
 }
 
 }

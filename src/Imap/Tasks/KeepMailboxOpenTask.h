@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -29,6 +29,7 @@
 
 class QTimer;
 class ImapModelIdleTest;
+class LibMailboxSync;
 
 namespace Imap
 {
@@ -38,10 +39,12 @@ class Parser;
 namespace Mailbox
 {
 
+class DeleteMailboxTask;
 class ObtainSynchronizedMailboxTask;
 class IdleLauncher;
 class FetchMsgMetadataTask;
 class FetchMsgPartTask;
+class TreeItemMailbox;
 class UnSelectTask;
 
 /** @short Maintain a connection to a mailbox
@@ -118,13 +121,13 @@ public:
     KeepMailboxOpenTask(Model *model, const QModelIndex &mailboxIndex, Parser *oldParser);
 
     virtual void abort();
-    virtual void die();
+    virtual void die(const QString &message);
 
     void stopForLogout();
 
     /** @short Start child processes
 
-    This function is called when the synchronizing task finished succesfully, that is, when we are ready
+    This function is called when the synchronizing task finished successfully, that is, when we are ready
     to execute regular tasks which depend on us.
     */
     virtual void perform();
@@ -142,7 +145,7 @@ public:
 
     QString debugIdentification() const;
 
-    void requestPartDownload(const uint uid, const QString &partId, const uint estimatedSize);
+    void requestPartDownload(const uint uid, const QByteArray &partId, const uint estimatedSize);
     /** @short Request a delayed loading of a message envelope */
     void requestEnvelopeDownload(const uint uid);
 
@@ -153,6 +156,8 @@ public:
     bool isReadyToTerminate() const;
 
     void feelFreeToAbortCaller(ImapTask *task);
+
+    bool hasItsOwnActivity() const;
 
 private slots:
     void slotTaskDeleted(QObject *object);
@@ -184,9 +189,13 @@ private slots:
     void slotFetchRequestedEnvelopes();
 
     /** @short Something bad has happened to the connection, and we're no longer in that mailbox */
-    void slotConnFailed();
+    void slotUnselected();
 
     void terminate();
+
+    void finalizeTermination();
+
+    void syncingTimeout();
 
 private:
     /** @short Activate the dependent tasks while also limiting the rate */
@@ -206,6 +215,14 @@ private:
     */
     bool dieIfInvalidMailbox();
 
+    /** @short Close mailbox forcifully, destroying its content in the process
+
+    Closing is performed via the CLOSE command, which is mandatory in all IMAP implementations. It has the ugly
+    side effect of removing any messages marked as \\Deleted. That's why this is a private method, only to be used
+    by the DeleteMailboxTask.
+    */
+    void closeMailboxDestructively();
+
     /** @short Return true if this has a list of stuff to do */
     bool hasPendingInternalActions() const;
 
@@ -213,8 +230,11 @@ private:
 
     bool canRunIdleRightNow() const;
 
+    void saveSyncStateNowOrLater(Imap::Mailbox::TreeItemMailbox *mailbox);
+    void saveSyncStateIfPossible(Imap::Mailbox::TreeItemMailbox *mailbox);
+
 protected:
-    virtual void killAllPendingTasks();
+    virtual void killAllPendingTasks(const QString &message);
 
     QPersistentModelIndex mailboxIndex;
 
@@ -239,7 +259,12 @@ protected:
     ObtainSynchronizedMailboxTask *synchronizeConn;
 
     bool shouldExit;
-    bool isRunning;
+    enum class Running {
+        NOT_YET,
+        RUNNING,
+        NOT_ANYMORE,
+    };
+    Running isRunning;
 
     QTimer *noopTimer;
     QTimer *fetchPartTimer;
@@ -249,24 +274,28 @@ protected:
     IdleLauncher *idleLauncher;
     QList<FetchMsgPartTask *> fetchPartTasks;
     QList<FetchMsgMetadataTask *> fetchMetadataTasks;
+    QPointer<DeleteMailboxTask> m_deleteCurrentMailboxTask;
     CommandHandle tagIdle;
     QList<CommandHandle> newArrivalsFetch;
+    CommandHandle tagClose;
     friend class IdleLauncher;
+    friend class ImapTask; // needs access to slotTaskDeleted()
     friend class ObtainSynchronizedMailboxTask; // needs access to slotUnSelectCompleted()
     friend class SortTask; // needs access to breakOrCancelPossibleIdle()
     friend class UnSelectTask; // needs access to breakPossibleIdle()
+    friend class DeleteMailboxTask; // needs access to the closeMailboxDestructively()
     friend class TreeItemMailbox; // wants to know if our index is OK
     friend class ::ImapModelIdleTest;
+    friend class ::LibMailboxSync;
 
-    QList<uint> uidMap;
-    QMap<uint, QSet<QString> > requestedParts;
+    QMap<uint, QSet<QByteArray> > requestedParts;
     QMap<uint, uint> requestedPartSizes;
     /** @short UIDs of messages with pending FetchMsgMetadataTask request
 
     QList is used in preference to the QSet in an attempt to maintain the order of requests. Simply ordering via UID is
     not enough because of output sorting, threads etc etc.
     */
-    QList<uint> requestedEnvelopes;
+    Imap::Uids requestedEnvelopes;
 
     uint limitBytesAtOnce;
     int limitMessagesAtOnce;
@@ -275,6 +304,13 @@ protected:
 
     /** @short An UNSELECT task, if active */
     UnSelectTask *unSelectTask;
+
+    /** @short Number of skipped syncing the mailbox state since the last performed sync */
+    uint m_skippedStateSynces;
+    /** @short Number of times the sync state got saved since the last timer reset */
+    uint m_performedStateSynces;
+    /** @short Tracking time since the last reset of our counters */
+    QTimer *m_syncingTimer;
 };
 
 }

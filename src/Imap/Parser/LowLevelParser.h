@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -25,6 +25,7 @@
 #include <QList>
 #include <QPair>
 #include <QVariant>
+#include "Imap/Parser/Uids.h"
 
 namespace Imap
 {
@@ -48,6 +49,7 @@ namespace LowLevelParser
 
 enum ParsedAs {
     ATOM /**< @short Parsed as RFC3501 "atom" data type */,
+    ASTRING, /**< @short "atom" with "resp-specials" */
     QUOTED /**< @short Quoted string (enclosed in single pair of double quotes */,
     LITERAL /**< @short String literal, ie. the {size}-form */,
     LITERAL8 /**< @short The literal8 syntax from BINARY */,
@@ -57,8 +59,12 @@ enum ParsedAs {
 /** @short Read an unsigned integer from input */
 uint getUInt(const QByteArray &line, int &start);
 
+/** @short Read a 64bit unsigned integer from input */
+quint64 getUInt64(const QByteArray &line, int &start);
+
 /** @short Read an ATOM */
 QByteArray getAtom(const QByteArray &line, int &start);
+QByteArray getPossiblyBackslashedAtom(const QByteArray &line, int &start);
 
 /** @short Read a quoted string or literal */
 QPair<QByteArray,ParsedAs> getString(const QByteArray &line, int &start);
@@ -90,13 +96,13 @@ QVariantList parseList(const char open, const char close,
 QVariant getAnything(const QByteArray &line, int &start);
 
 /** @short Parse a sequence set from the input */
-QList<uint> getSequence(const QByteArray &line, int &start);
+Imap::Uids getSequence(const QByteArray &line, int &start);
 
 /** @short Parse RFC2822-like formatted date
  *
  * Code for this class was lobotomized from KDE's KDateTime.
  * */
-QDateTime parseRFC2822DateTime(const QString &string);
+QDateTime parseRFC2822DateTime(const QByteArray &input);
 
 /** @short Eat spaces as long as we can */
 void eatSpaces(const QByteArray &line, int &start);

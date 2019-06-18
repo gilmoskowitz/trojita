@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -28,11 +28,10 @@ Sendmail::Sendmail(QObject *parent, const QString &command, const QStringList &a
     AbstractMSA(parent), command(command), args(args)
 {
     proc = new QProcess(this);
-    connect(proc, SIGNAL(started()), this, SLOT(handleStarted()));
-    connect(proc, SIGNAL(finished(int)), this, SLOT(handleFinished(int)));
-    connect(proc, SIGNAL(error(QProcess::ProcessError)),
-            this, SLOT(handleError(QProcess::ProcessError)));
-    connect(proc, SIGNAL(bytesWritten(qint64)), this, SLOT(handleBytesWritten(qint64)));
+    connect(proc, &QProcess::started, this, &Sendmail::handleStarted);
+    connect(proc, static_cast<void (QProcess::*)(int)>(&QProcess::finished), this, &Sendmail::handleFinished);
+    connect(proc, static_cast<void (QProcess::*)(QProcess::ProcessError)>(&QProcess::error), this, &Sendmail::handleError);
+    connect(proc, &QIODevice::bytesWritten, this, &Sendmail::handleBytesWritten);
 }
 
 Sendmail::~Sendmail()
@@ -48,11 +47,11 @@ void Sendmail::sendMail(const QByteArray &from, const QList<QByteArray> &to, con
     emit progressMax(data.size() + 2);
     emit progress(0);
     QStringList myArgs = args;
-    myArgs << "-f" << from;
+    myArgs << QStringLiteral("-f") << QString::fromUtf8(from);
     for (QList<QByteArray>::const_iterator it = to.begin(); it != to.end(); ++it) {
         // On posix systems, process args are bytearrays, not strings--- but QProcess
         // takes strings.
-        myArgs << QString(*it);
+        myArgs << QString::fromUtf8(*it);
     }
     writtenSoFar = 0;
     emit connecting();
@@ -102,6 +101,20 @@ void Sendmail::handleFinished(const int exitCode)
     QByteArray allStderr = proc->readAllStandardError();
     emit error(tr("The sendmail process has failed (%1):\n%2\n%3").arg(QString::number(exitCode), QString::fromUtf8(allStdout),
                                                                        QString::fromUtf8(allStderr)));
+}
+
+SendmailFactory::SendmailFactory(const QString &command, const QStringList &args):
+    m_command(command), m_args(args)
+{
+}
+
+SendmailFactory::~SendmailFactory()
+{
+}
+
+AbstractMSA *SendmailFactory::create(QObject *parent) const
+{
+    return new Sendmail(parent, m_command, m_args);
 }
 
 }

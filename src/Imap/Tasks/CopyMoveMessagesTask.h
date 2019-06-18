@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,8 +24,8 @@
 #define IMAP_COPYMOVEMESSAGES_TASK_H
 
 #include <QPersistentModelIndex>
+#include "Imap/Model/Model.h"
 #include "ImapTask.h"
-#include "Model/Model.h"
 
 namespace Imap
 {

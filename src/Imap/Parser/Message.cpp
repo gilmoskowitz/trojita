@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,12 +24,10 @@
 
 #include <QTextDocument>
 #include <QUrl>
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
-#include <QUrlQuery>
-#endif
 #include <QTextCodec>
 #include "Message.h"
 #include "MailAddress.h"
+#include "LowLevelParser.h"
 #include "../Model/MailboxTree.h"
 #include "../Encoders.h"
 #include "../Parser/Rfc5322HeaderParser.h"
@@ -332,17 +330,32 @@ AbstractMessage::bodyFldDsp_t AbstractMessage::makeBodyFldDsp(const QVariant &in
     bodyFldDsp_t res;
 
     if (input.type() != QVariant::List) {
-        if (input.type() == QVariant::ByteArray && input.toByteArray().isNull())
-            return res;
+        if (input.type() == QVariant::ByteArray) {
+            if (input.toByteArray().isNull()) {
+                return res;
+            } else {
+                qDebug() << "IMAP Parser warning: body-fld-dsp not a list or nil, got this instead: " << input.toByteArray();
+                return res;
+            }
+        }
         throw UnexpectedHere("body-fld-dsp: not a list / nil", line, start);
     }
     QVariantList list = input.toList();
-    if (list.size() != 2)
-        throw ParseError("body-fld-dsp: wrong number of entries in the list", line, start);
-    if (list[0].type() != QVariant::ByteArray)
+
+    if (list.size() < 1) {
+        throw ParseError("body-fld-dsp: empty list is not allowed", line, start);
+    }
+    if (list[0].type() != QVariant::ByteArray) {
         throw UnexpectedHere("body-fld-dsp: first item is not a string", line, start);
+    }
     res.first = list[0].toByteArray();
-    res.second = makeBodyFldParam(list[1], line, start);
+    if (list.size() > 2) {
+        throw ParseError("body-fld-dsp: too many items in the list", line, start);
+    } else if (list.size() == 2) {
+        res.second = makeBodyFldParam(list[1], line, start);
+    } else {
+        qDebug() << "IMAP Parser warning: body-fld-dsp: second item not present, ignoring";
+    }
     return res;
 }
 
@@ -369,11 +382,48 @@ uint AbstractMessage::extractUInt(const QVariant &var, const QByteArray &line, c
 {
     if (var.type() == QVariant::UInt)
         return var.toUInt();
-    if (var.type() == QVariant::ByteArray && var.toByteArray() == QByteArray("-1")) {
-        qDebug() << "Parser warning: -1 is not an unsigned int";
-        return 0;
+    if (var.type() == QVariant::ByteArray) {
+        bool ok = false;
+        int number = var.toInt(&ok);
+        if (ok) {
+            if (number >= 0) {
+                return number;
+            } else {
+                qDebug() << "Parser warning:" << number << "is not an unsigned int";
+                return 0;
+            }
+        } else if (var.toByteArray().isEmpty()) {
+            qDebug() << "Parser warning: expected unsigned int, but got NIL or an empty string instead, yuck";
+            return 0;
+        } else {
+            throw UnexpectedHere("extractUInt: not a number", line, start);
+        }
     }
     throw UnexpectedHere("extractUInt: weird data type", line, start);
+}
+
+quint64 AbstractMessage::extractUInt64(const QVariant &var, const QByteArray &line, const int start)
+{
+    if (var.type() == QVariant::ULongLong)
+        return var.toULongLong();
+    if (var.type() == QVariant::ByteArray) {
+        bool ok = false;
+        qint64 number = var.toLongLong(&ok);
+        if (ok) {
+            if (number >= 0) {
+                return number;
+            } else {
+                qDebug() << "Parser warning:" << number << "is not an unsigned 64 bit int";
+                return 0;
+            }
+        } else if (var.toByteArray().isEmpty()) {
+            qDebug() << "Parser warning: expected unsigned 64 bit int, but got NIL or an empty string instead, yuck";
+            return 0;
+        } else {
+            throw UnexpectedHere("extractUInt64: not a number", line, start);
+        }
+    }
+    throw UnexpectedHere("extractUInt64: weird data type", line, start);
 }
 
 
@@ -386,9 +436,9 @@ QSharedPointer<AbstractMessage> AbstractMessage::fromList(const QVariantList &it
         // it's a single-part message, hurray
 
         int i = 0;
-        QString mediaType = items[i].toString().toLower();
+        QByteArray mediaType = items[i].toByteArray().toLower();
         ++i;
-        QString mediaSubType = items[i].toString().toLower();
+        QByteArray mediaSubType = items[i].toByteArray().toLower();
         ++i;
 
         if (items.size() < 7) {
@@ -425,9 +475,9 @@ QSharedPointer<AbstractMessage> AbstractMessage::fromList(const QVariantList &it
             ++i;
         }
 
-        uint bodyFldOctets = 0;
+        quint64 bodyFldOctets = 0;
         if (i < items.size()) {
-            bodyFldOctets = extractUInt(items[i], line, start);
+            bodyFldOctets = extractUInt64(items[i], line, start);
             ++i;
         }
 
@@ -437,7 +487,7 @@ QSharedPointer<AbstractMessage> AbstractMessage::fromList(const QVariantList &it
 
         enum { MESSAGE, TEXT, BASIC} kind;
 
-        if (mediaType == QLatin1String("message") && mediaSubType == QLatin1String("rfc822")) {
+        if (mediaType == "message" && mediaSubType == "rfc822") {
             // extract envelope, body, body-fld-lines
 
             if (items.size() < 10)
@@ -466,7 +516,7 @@ QSharedPointer<AbstractMessage> AbstractMessage::fromList(const QVariantList &it
             }
             ++i;
 
-        } else if (mediaType == QLatin1String("text")) {
+        } else if (mediaType == "text") {
             kind = TEXT;
             if (i < items.size()) {
                 // extract body-fld-lines
@@ -566,7 +616,7 @@ QSharedPointer<AbstractMessage> AbstractMessage::fromList(const QVariantList &it
 
         if (items[i].type() != QVariant::ByteArray)
             throw UnexpectedHere("body-type-mpart: media-subtype not recognized", line, start);
-        QString mediaSubType = items[i].toString().toLower();
+        QByteArray mediaSubType = items[i].toByteArray().toLower();
         ++i;
 
         // body-ext-mpart
@@ -704,6 +754,8 @@ Examples are stuff like the charset, or the suggested filename.
 */
 void AbstractMessage::storeInterestingFields(Mailbox::TreeItemPart *p) const
 {
+    p->setBodyFldParam(bodyFldParam);
+
     // Charset
     bodyFldParam_t::const_iterator it = bodyFldParam.find("CHARSET");
     if (it != bodyFldParam.end()) {
@@ -714,17 +766,22 @@ void AbstractMessage::storeInterestingFields(Mailbox::TreeItemPart *p) const
     it = bodyFldParam.find("FORMAT");
     if (it != bodyFldParam.end()) {
         p->setContentFormat(*it);
+
+        it = bodyFldParam.find("DELSP");
+        if (it != bodyFldParam.end()) {
+            p->setContentDelSp(*it);
+        }
     }
 
     // Filename and content-disposition
     if (!bodyFldDsp.first.isNull()) {
         p->setBodyDisposition(bodyFldDsp.first);
-        it = bodyFldDsp.second.find("FILENAME");
-        if (it != bodyFldDsp.second.end()) {
-            p->setFileName(Imap::decodeRFC2047String(*it));
-        } else if ((it = bodyFldParam.find("NAME")) != bodyFldParam.end()) {
-            p->setFileName(Imap::decodeRFC2047String(*it));
-        }
+        p->setFileName(Imap::extractRfc2231Param(bodyFldDsp.second, "FILENAME"));
+    }
+    // Try to look for the obsolete "name" right in the Content-Type header (as parsed by the IMAP server) as a fallback
+    // As per Thomas' suggestion, an empty-but-specified filename is happily overwritten here by design.
+    if (p->fileName().isEmpty()) {
+        p->setFileName(Imap::extractRfc2231Param(bodyFldParam, "NAME"));
     }
 }
 
@@ -741,7 +798,7 @@ void MultiMessage::storeInterestingFields(Mailbox::TreeItemPart *p) const
     AbstractMessage::storeInterestingFields(p);
 
     // The multipart/related can specify the root part to show
-    if (mediaSubType == QLatin1String("related")) {
+    if (mediaSubType == "related") {
         bodyFldParam_t::const_iterator it = bodyFldParam.find("START");
         if (it != bodyFldParam.end()) {
             p->setMultipartRelatedStartPart(*it);
@@ -749,38 +806,38 @@ void MultiMessage::storeInterestingFields(Mailbox::TreeItemPart *p) const
     }
 }
 
-QList<Mailbox::TreeItem *> TextMessage::createTreeItems(Mailbox::TreeItem *parent) const
+Mailbox::TreeItemChildrenList TextMessage::createTreeItems(Mailbox::TreeItem *parent) const
 {
-    QList<Mailbox::TreeItem *> list;
-    Mailbox::TreeItemPart *p = new Mailbox::TreeItemPart(parent, QString("%1/%2").arg(mediaType, mediaSubType));
+    Mailbox::TreeItemChildrenList list;
+    Mailbox::TreeItemPart *p = new Mailbox::TreeItemPart(parent, mediaType + "/" + mediaSubType);
     storeInterestingFields(p);
     list << p;
     return list;
 }
 
-QList<Mailbox::TreeItem *> BasicMessage::createTreeItems(Mailbox::TreeItem *parent) const
+Mailbox::TreeItemChildrenList BasicMessage::createTreeItems(Mailbox::TreeItem *parent) const
 {
-    QList<Mailbox::TreeItem *> list;
-    Mailbox::TreeItemPart *p = new Mailbox::TreeItemPart(parent, QString("%1/%2").arg(mediaType, mediaSubType));
+    Mailbox::TreeItemChildrenList list;
+    Mailbox::TreeItemPart *p = new Mailbox::TreeItemPart(parent, mediaType + "/" + mediaSubType);
     storeInterestingFields(p);
     list << p;
     return list;
 }
 
-QList<Mailbox::TreeItem *> MsgMessage::createTreeItems(Mailbox::TreeItem *parent) const
+Mailbox::TreeItemChildrenList MsgMessage::createTreeItems(Mailbox::TreeItem *parent) const
 {
-    QList<Mailbox::TreeItem *> list;
-    Mailbox::TreeItemPart *part = new Mailbox::TreeItemPart(parent, QString("%1/%2").arg(mediaType, mediaSubType));
+    Mailbox::TreeItemChildrenList list;
+    Mailbox::TreeItemPart *part = new Mailbox::TreeItemPartMultipartMessage(parent, envelope);
     part->setChildren(body->createTreeItems(part));     // always returns an empty list -> no need to qDeleteAll()
     storeInterestingFields(part);
     list << part;
     return list;
 }
 
-QList<Mailbox::TreeItem *> MultiMessage::createTreeItems(Mailbox::TreeItem *parent) const
+Mailbox::TreeItemChildrenList MultiMessage::createTreeItems(Mailbox::TreeItem *parent) const
 {
-    QList<Mailbox::TreeItem *> list, list2;
-    Mailbox::TreeItemPart *part = new Mailbox::TreeItemPart(parent, QString("multipart/%1").arg(mediaSubType));
+    Mailbox::TreeItemChildrenList list, list2;
+    Mailbox::TreeItemPart *part = new Mailbox::TreeItemPart(parent, "multipart/" + mediaSubType);
     for (QList<QSharedPointer<AbstractMessage> >::const_iterator it = bodies.begin(); it != bodies.end(); ++it) {
         list2 << (*it)->createTreeItems(part);
     }
@@ -793,7 +850,7 @@ QList<Mailbox::TreeItem *> MultiMessage::createTreeItems(Mailbox::TreeItem *pare
 }
 }
 
-QDebug operator<<(QDebug &dbg, const Imap::Message::Envelope &envelope)
+QDebug operator<<(QDebug dbg, const Imap::Message::Envelope &envelope)
 {
     using namespace Imap::Message;
     return dbg << "Envelope( FROM" << MailAddress::prettyList(envelope.from, MailAddress::FORMAT_READABLE) <<

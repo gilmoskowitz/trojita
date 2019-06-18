@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -47,21 +47,58 @@ class EmbeddedWebView: public QWebView
 {
     Q_OBJECT
 public:
+    enum class ColorScheme {
+        /** @short System's color scheme, but let the content override this */
+        System,
+        /** @short System's color scheme adjusted towards a compromise for reasonable contrats on funny backgrounds */
+        AdjustedSystem,
+        /** @short Use boring black-text-on-white-background */
+        BlackOnWhite,
+    };
+
     EmbeddedWebView(QWidget *parent, QNetworkAccessManager *networkManager);
     QSize sizeHint() const;
+    QWidget *scrollParent() const;
+    void setStaticWidth(int staticWidth);
+    int staticWidth() const;
+    std::map<ColorScheme, QString> supportedColorSchemes() const;
+public slots:
+    void setColorScheme(const ColorScheme colorScheme);
 protected:
     void changeEvent(QEvent *e);
     bool eventFilter(QObject *o, QEvent *e);
+    void mouseMoveEvent(QMouseEvent *e);
+    void mouseReleaseEvent(QMouseEvent *e);
     void showEvent(QShowEvent *se);
-private:
+    void addCustomStylesheet(const QString &css);
     void constrainSize();
+private:
     void findScrollParent();
 private slots:
+    void autoScroll();
     void slotLinkClicked(const QUrl &url);
-    void handlePageLoadFinished(bool ok);
+    void handlePageLoadFinished();
 private:
     QWidget *m_scrollParent;
     int m_scrollParentPadding;
+    int m_resizeInProgress;
+    QTimer *m_autoScrollTimer;
+    QTimer *m_sizeContrainTimer;
+    int m_autoScrollPixels;
+    int m_staticWidth;
+    QString m_customCss;
+protected:
+    ColorScheme m_colorScheme;
+};
+
+class ErrorCheckingPage: public QWebPage
+{
+    Q_OBJECT
+public:
+    explicit ErrorCheckingPage(QObject *parent);
+
+    virtual bool extension(Extension extension, const ExtensionOption *option, ExtensionReturn *output);
+    virtual bool supportsExtension(Extension extension) const;
 };
 
 }

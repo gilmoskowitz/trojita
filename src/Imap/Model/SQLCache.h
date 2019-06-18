@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -37,6 +37,18 @@ namespace Imap
 namespace Mailbox
 {
 
+/** @short Wrapper around the braindead API of QSqlDatabase for auto-removing connections
+
+Because the QSqlDatabase really wants to operate over a global namespace of DB connections, it's important to remove them
+when they are no longer needed. However, this removal (QSqlDatabase::removeDatabase) should run after all queries are gone,
+otherwise there's an ugly warning on stderr about queries which are going to cease to work.
+*/
+struct DbConnectionCleanup
+{
+    ~DbConnectionCleanup();
+    QString name;
+};
+
 /** @short A cache implementation using an sqlite database for the underlying storage
 
   This class should not be used on its own, as it simply puts everything into a database.
@@ -72,21 +84,22 @@ public:
     virtual SyncState mailboxSyncState(const QString &mailbox) const;
     virtual void setMailboxSyncState(const QString &mailbox, const SyncState &state);
 
-    virtual void setUidMapping(const QString &mailbox, const QList<uint> &seqToUid);
+    virtual void setUidMapping(const QString &mailbox, const Imap::Uids &seqToUid);
     virtual void clearUidMapping(const QString &mailbox);
-    virtual QList<uint> uidMapping(const QString &mailbox) const;
+    virtual Imap::Uids uidMapping(const QString &mailbox) const;
 
     virtual void clearAllMessages(const QString &mailbox);
-    virtual void clearMessage(const QString mailbox, uint uid);
+    virtual void clearMessage(const QString mailbox, const uint uid);
 
     virtual MessageDataBundle messageMetadata(const QString &mailbox, uint uid) const;
-    virtual void setMessageMetadata(const QString &mailbox, uint uid, const MessageDataBundle &metadata);
+    virtual void setMessageMetadata(const QString &mailbox, const uint uid, const MessageDataBundle &metadata);
 
-    virtual QStringList msgFlags(const QString &mailbox, uint uid) const;
-    virtual void setMsgFlags(const QString &mailbox, uint uid, const QStringList &flags);
+    virtual QStringList msgFlags(const QString &mailbox, const uint uid) const;
+    virtual void setMsgFlags(const QString &mailbox, const uint uid, const QStringList &flags);
 
-    virtual QByteArray messagePart(const QString &mailbox, uint uid, const QString &partId) const;
-    virtual void setMsgPart(const QString &mailbox, uint uid, const QString &partId, const QByteArray &data);
+    virtual QByteArray messagePart(const QString &mailbox, const uint uid, const QByteArray &partId) const;
+    virtual void setMsgPart(const QString &mailbox, const uint uid, const QByteArray &partId, const QByteArray &data);
+    virtual void forgetMessagePart(const QString &mailbox, const uint uid, const QByteArray &partId);
 
     virtual QVector<Imap::Responses::ThreadingNode> messageThreading(const QString &mailbox);
     virtual void setMessageThreading(const QString &mailbox, const QVector<Imap::Responses::ThreadingNode> &threading);
@@ -115,15 +128,21 @@ private:
     /** @short Initialize the database */
     void init();
 
+    static QString mailboxName(const QString &mailbox);
+
 private slots:
-    /** @short We haven't commited for a while */
+    /** @short We haven't committed for a while */
     void timeToCommit();
 
 private:
+    // this needs to go before all QSqlDatabase/QSqlQuery instances for proper destruction order
+    DbConnectionCleanup m_cleanup;
+
     QSqlDatabase db;
 
     mutable QSqlQuery queryChildMailboxes;
     mutable QSqlQuery queryChildMailboxesFresh;
+    mutable QSqlQuery queryRemoveChildMailboxes;
     mutable QSqlQuery querySetChildMailboxes;
     mutable QSqlQuery queryMailboxSyncState;
     mutable QSqlQuery querySetMailboxSyncState;
@@ -138,11 +157,13 @@ private:
     mutable QSqlQuery queryClearAllMessages1;
     mutable QSqlQuery queryClearAllMessages2;
     mutable QSqlQuery queryClearAllMessages3;
+    mutable QSqlQuery queryClearAllMessages4;
     mutable QSqlQuery queryClearMessage1;
     mutable QSqlQuery queryClearMessage2;
     mutable QSqlQuery queryClearMessage3;
     mutable QSqlQuery queryMessagePart;
     mutable QSqlQuery querySetMessagePart;
+    mutable QSqlQuery queryForgetMessagePart;
     mutable QSqlQuery queryMessageThreading;
     mutable QSqlQuery querySetMessageThreading;
 

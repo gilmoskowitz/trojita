@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -31,35 +31,35 @@ QString fileErrorToString(const QFile::FileError e)
 {
     switch (e) {
     case QFile::NoError:
-        return QLatin1String("QFile::NoError");
+        return QStringLiteral("QFile::NoError");
     case QFile::ReadError:
-        return QLatin1String("QFile::ReadError");
+        return QStringLiteral("QFile::ReadError");
     case QFile::WriteError:
-        return QLatin1String("QFile::WriteError");
+        return QStringLiteral("QFile::WriteError");
     case QFile::FatalError:
-        return QLatin1String("QFile::FatalError");
+        return QStringLiteral("QFile::FatalError");
     case QFile::ResourceError:
-        return QLatin1String("QFile::ResourceError");
+        return QStringLiteral("QFile::ResourceError");
     case QFile::OpenError:
-        return QLatin1String("QFile::OpenError");
+        return QStringLiteral("QFile::OpenError");
     case QFile::AbortError:
-        return QLatin1String("QFile::AbortError");
+        return QStringLiteral("QFile::AbortError");
     case QFile::TimeOutError:
-        return QLatin1String("QFile::TimeOutError");
+        return QStringLiteral("QFile::TimeOutError");
     case QFile::UnspecifiedError:
-        return QLatin1String("QFile::UnspecifiedError");
+        return QStringLiteral("QFile::UnspecifiedError");
     case QFile::RemoveError:
-        return QLatin1String("QFile::RemoveError");
+        return QStringLiteral("QFile::RemoveError");
     case QFile::RenameError:
-        return QLatin1String("QFile::RenameError");
+        return QStringLiteral("QFile::RenameError");
     case QFile::PositionError:
-        return QLatin1String("QFile::PositionError");
+        return QStringLiteral("QFile::PositionError");
     case QFile::ResizeError:
-        return QLatin1String("QFile::ResizeError");
+        return QStringLiteral("QFile::ResizeError");
     case QFile::PermissionsError:
-        return QLatin1String("QFile::PermissionsError");
+        return QStringLiteral("QFile::PermissionsError");
     case QFile::CopyError:
-        return QLatin1String("QFile::CopyError");
+        return QStringLiteral("QFile::CopyError");
     }
     return QObject::tr("Unrecognized QFile error");
 }
@@ -72,8 +72,8 @@ namespace Mailbox
 
 DiskPartCache::DiskPartCache(QObject *parent, const QString &cacheDir_): QObject(parent), cacheDir(cacheDir_)
 {
-    if (!cacheDir.endsWith(QChar('/')))
-        cacheDir.append(QChar('/'));
+    if (!cacheDir.endsWith(QLatin1Char('/')))
+        cacheDir.append(QLatin1Char('/'));
 }
 
 void DiskPartCache::clearAllMessages(const QString &mailbox)
@@ -86,7 +86,7 @@ void DiskPartCache::clearAllMessages(const QString &mailbox)
     }
 }
 
-void DiskPartCache::clearMessage(const QString mailbox, uint uid)
+void DiskPartCache::clearMessage(const QString mailbox, const uint uid)
 {
     QDir dir(dirForMailbox(mailbox));
     Q_FOREACH(const QString& fname, dir.entryList(QStringList() << QString::fromUtf8("%1_*.cache").arg(QString::number(uid)))) {
@@ -96,32 +96,42 @@ void DiskPartCache::clearMessage(const QString mailbox, uint uid)
     }
 }
 
-QByteArray DiskPartCache::messagePart(const QString &mailbox, uint uid, const QString &partId) const
+QByteArray DiskPartCache::messagePart(const QString &mailbox, const uint uid, const QByteArray &partId) const
 {
-    QFile buf(QString::fromUtf8("%1/%2_%3.cache").arg(dirForMailbox(mailbox), QString::number(uid), partId));
+    QFile buf(fileForPart(mailbox, uid, partId));
     if (! buf.open(QIODevice::ReadOnly)) {
         return QByteArray();
     }
     return qUncompress(buf.readAll());
 }
 
-void DiskPartCache::setMsgPart(const QString &mailbox, uint uid, const QString &partId, const QByteArray &data)
+void DiskPartCache::setMsgPart(const QString &mailbox, const uint uid, const QByteArray &partId, const QByteArray &data)
 {
     QString myPath = dirForMailbox(mailbox);
     QDir dir(myPath);
     dir.mkpath(myPath);
-    QString fileName = QString::fromUtf8("%1/%2_%3.cache").arg(myPath, QString::number(uid), partId);
+    QString fileName(fileForPart(mailbox, uid, partId));
     QFile buf(fileName);
     if (! buf.open(QIODevice::WriteOnly)) {
         emit error(tr("Couldn't save the part %1 of message %2 (mailbox %3) into file %4: %5 (%6)").arg(
-                       partId, QString::number(uid), mailbox, fileName, buf.errorString(), fileErrorToString(buf.error())));
+                       QString::fromUtf8(partId), QString::number(uid), mailbox, fileName, buf.errorString(), fileErrorToString(buf.error())));
     }
     buf.write(qCompress(data));
 }
 
+void DiskPartCache::forgetMessagePart(const QString &mailbox, const uint uid, const QByteArray &partId)
+{
+    QFile(fileForPart(mailbox, uid, partId)).remove();
+}
+
 QString DiskPartCache::dirForMailbox(const QString &mailbox) const
 {
-    return cacheDir + mailbox.toUtf8().toBase64();
+    return cacheDir + QString::fromUtf8(mailbox.toUtf8().toBase64());
+}
+
+QString DiskPartCache::fileForPart(const QString &mailbox, const uint uid, const QByteArray &partId) const
+{
+    return QStringLiteral("%1/%2_%3.cache").arg(dirForMailbox(mailbox), QString::number(uid), QString::fromUtf8(partId));
 }
 
 }

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,10 @@
 
 
 #include "SubscribeUnsubscribeTask.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "GetAnyConnectionTask.h"
-#include "ItemRoles.h"
-#include "Model.h"
-#include "MailboxTree.h"
 
 namespace Imap
 {
@@ -33,12 +33,16 @@ namespace Mailbox
 {
 
 
-SubscribeUnsubscribeTask::SubscribeUnsubscribeTask(Model *model, const QModelIndex &mailbox, SubscribeUnsubscribeOperation operation):
-    ImapTask(model), operation(operation), mailboxIndex(mailbox)
+SubscribeUnsubscribeTask::SubscribeUnsubscribeTask(Model *model, const QString &mailboxName, SubscribeUnsubscribeOperation operation):
+    ImapTask(model), operation(operation), mailboxName(mailboxName)
 {
-    TreeItemMailbox *mailboxPtr = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailbox.internalPointer()));
-    Q_ASSERT(mailboxPtr);
     conn = model->m_taskFactory->createGetAnyConnectionTask(model);
+    conn->addDependentTask(this);
+}
+
+SubscribeUnsubscribeTask::SubscribeUnsubscribeTask(Model *model, ImapTask *parentTask, const QString &mailboxName, SubscribeUnsubscribeOperation operation):
+    ImapTask(model), conn(parentTask), operation(operation), mailboxName(mailboxName)
+{
     conn->addDependentTask(this);
 }
 
@@ -49,21 +53,12 @@ void SubscribeUnsubscribeTask::perform()
 
     IMAP_TASK_CHECK_ABORT_DIE;
 
-    if (! mailboxIndex.isValid()) {
-        // FIXME: add proper fix
-        log("Mailbox vanished before we could ask for number of messages inside");
-        _completed();
-        return;
-    }
-    TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
-    Q_ASSERT(mailbox);
-
     switch (operation) {
     case SUBSCRIBE:
-        tag = parser->subscribe(mailbox->mailbox());
+        tag = parser->subscribe(mailboxName);
         break;
     case UNSUBSCRIBE:
-        tag = parser->unSubscribe(mailbox->mailbox());
+        tag = parser->unSubscribe(mailboxName);
         break;
     default:
         Q_ASSERT(false);
@@ -77,8 +72,8 @@ bool SubscribeUnsubscribeTask::handleStateHelper(const Imap::Responses::State *c
 
     if (resp->tag == tag) {
         if (resp->kind == Responses::OK) {
-            TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
-            QString subscribed = QLatin1String("\\SUBSCRIBED");
+            TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(model->findMailboxByName(mailboxName));
+            QString subscribed = QStringLiteral("\\SUBSCRIBED");
             switch (operation) {
             case SUBSCRIBE:
                 if (mailbox && !mailbox->m_metadata.flags.contains(subscribed)) {
@@ -90,9 +85,13 @@ bool SubscribeUnsubscribeTask::handleStateHelper(const Imap::Responses::State *c
                     mailbox->m_metadata.flags.removeOne(subscribed);
                 }
             }
+            if (mailbox) {
+                auto index = mailbox->toIndex(model);
+                emit model->dataChanged(index, index);
+            }
             _completed();
         } else {
-            _failed("SUBSCRIBE/UNSUBSCRIBE has failed");
+            _failed(tr("SUBSCRIBE/UNSUBSCRIBE has failed"));
             // FIXME: error handling
         }
         return true;
@@ -103,17 +102,12 @@ bool SubscribeUnsubscribeTask::handleStateHelper(const Imap::Responses::State *c
 
 QString SubscribeUnsubscribeTask::debugIdentification() const
 {
-    if (! mailboxIndex.isValid())
-        return QLatin1String("[invalid mailboxIndex]");
-
-    TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
-    Q_ASSERT(mailbox);
-    return QString::fromUtf8("attached to %1").arg(mailbox->mailbox());
+    return QStringLiteral("Subscription update for %1").arg(mailboxName);
 }
 
 QVariant SubscribeUnsubscribeTask::taskData(const int role) const
 {
-    return role == RoleTaskCompactName ? QVariant(tr("Looking for messages")) : QVariant();
+    return role == RoleTaskCompactName ? QVariant(tr("Updating subscription information")) : QVariant();
 }
 
 }

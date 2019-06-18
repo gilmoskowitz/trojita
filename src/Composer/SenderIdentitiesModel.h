@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -53,7 +53,7 @@ public:
     explicit SenderIdentitiesModel(QObject *parent = 0);
     virtual int rowCount(const QModelIndex &parent = QModelIndex()) const;
     virtual int columnCount(const QModelIndex &parent = QModelIndex()) const;
-    virtual QVariant data(const QModelIndex &index, const int role = Qt::DisplayRole) const;
+    virtual QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const;
     virtual QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const;
     /** @short Reimplemented from QAbstractTableModel; required for QDataWidgetMapper. */
     virtual bool setData(const QModelIndex &index, const QVariant &value, int role = Qt::EditRole);

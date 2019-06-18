@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -35,26 +35,26 @@ namespace Common
 class SqlTransactionAutoAborter
 {
 public:
-    SqlTransactionAutoAborter(QSqlDatabase *db): db(db), commited(false)
+    SqlTransactionAutoAborter(QSqlDatabase *db): db(db), committed(false)
     {
         db->transaction();
     }
 
     ~SqlTransactionAutoAborter()
     {
-        if (! commited)
+        if (! committed)
             db->rollback();
     }
 
     bool commit()
     {
-        commited = db->commit();
-        return commited;
+        committed = db->commit();
+        return committed;
     }
 
 private:
     QSqlDatabase *db;
-    bool commited;
+    bool committed;
 };
 }
 

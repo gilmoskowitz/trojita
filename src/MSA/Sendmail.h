@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -53,6 +53,17 @@ private:
 
     Sendmail(const Sendmail &); // don't implement
     Sendmail &operator=(const Sendmail &); // don't implement
+};
+
+class SendmailFactory: public MSAFactory
+{
+public:
+    SendmailFactory(const QString &command, const QStringList &args);
+    virtual ~SendmailFactory();
+    virtual AbstractMSA *create(QObject *parent) const;
+private:
+    QString m_command;
+    QStringList m_args;
 };
 
 }

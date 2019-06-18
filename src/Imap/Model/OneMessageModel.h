@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -63,9 +63,13 @@ class OneMessageModel: public QObject
     Q_PROPERTY(bool isMarkedForwarded READ isMarkedForwarded NOTIFY flagsChanged)
     Q_PROPERTY(bool isMarkedReplied READ isMarkedReplied NOTIFY flagsChanged)
     Q_PROPERTY(bool isMarkedRecent READ isMarkedRecent NOTIFY flagsChanged)
+    Q_PROPERTY(bool isMarkedFlagged READ isMarkedFlagged NOTIFY flagsChanged)
+    Q_PROPERTY(bool isMarkedJunk READ isMarkedJunk NOTIFY flagsChanged)
+    Q_PROPERTY(bool isMarkedNotJunk READ isMarkedNotJunk NOTIFY flagsChanged)
     Q_PROPERTY(QUrl mainPartUrl READ mainPartUrl NOTIFY mainPartUrlChanged)
     Q_PROPERTY(QObject* attachmentsModel READ attachmentsModel NOTIFY mainPartUrlChanged)
     Q_PROPERTY(bool hasValidIndex READ hasValidIndex NOTIFY envelopeChanged)
+    Q_PROPERTY(QModelIndex mainPartModelIndex READ mainPartModelIndex)
 
 public:
     explicit OneMessageModel(Model *model);
@@ -88,9 +92,13 @@ public:
     bool isMarkedForwarded() const;
     bool isMarkedReplied() const;
     bool isMarkedRecent() const;
+    bool isMarkedFlagged() const;
+    bool isMarkedJunk() const;
+    bool isMarkedNotJunk() const;
     QUrl mainPartUrl() const;
     QObject *attachmentsModel() const;
     bool hasValidIndex() const;
+    QModelIndex mainPartModelIndex();
 
     Q_INVOKABLE void setMessage(const QString &mailbox, const uint uid);
     void setMessage(const QModelIndex &message);

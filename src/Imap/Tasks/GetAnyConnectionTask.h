@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -39,7 +39,7 @@ and returns it, unless there are no connections, in which case it creates a new 
 In order to prevent some funny ordering issues, this task will sleep until no other
 Tasks are using the connection in question, effectively serializing commands. Note
 that this aspect of behavior can (and most likely will) change in future in order to
-better accomodate command pipelining. Another thing to note is that this "sleeping"
+better accommodate command pipelining. Another thing to note is that this "sleeping"
 only waits stuff which got queued before this task, and that GetAnyConnection typically
 finishes immediately, so the serialization effectively isn't here.
 */

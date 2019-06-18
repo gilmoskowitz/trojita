@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -61,8 +61,8 @@ FileLogger::~FileLogger()
 
 void FileLogger::escapeCrLf(QString &s)
 {
-    s.replace(QChar('\r'), 0x240d /* SYMBOL FOR CARRIAGE RETURN */)
-            .replace(QChar('\n'), 0x240a /* SYMBOL FOR LINE FEED */);
+    s.replace(QLatin1Char('\r'), 0x240d /* SYMBOL FOR CARRIAGE RETURN */)
+            .replace(QLatin1Char('\n'), 0x240a /* SYMBOL FOR LINE FEED */);
 }
 
 void FileLogger::slotImapLogged(uint parser, Common::LogMessage message)
@@ -98,31 +98,31 @@ QString FileLogger::formatMessage(uint parser, const Common::LogMessage &message
     QString direction;
     switch (message.kind) {
     case LOG_IO_READ:
-        direction = QLatin1String(" <<< ");
+        direction = QStringLiteral(" <<< ");
         break;
     case LOG_IO_WRITTEN:
-        direction = QLatin1String(" >>> ");
+        direction = QStringLiteral(" >>> ");
         break;
     case LOG_PARSE_ERROR:
-        direction = QLatin1String(" [err] ");
+        direction = QStringLiteral(" [err] ");
         break;
     case LOG_MAILBOX_SYNC:
-        direction = QLatin1String(" [sync] ");
+        direction = QStringLiteral(" [sync] ");
         break;
     case LOG_TASKS:
-        direction = QLatin1String(" [task] ");
+        direction = QStringLiteral(" [task] ");
         break;
     case LOG_MESSAGES:
-        direction = QLatin1String(" [msg] ");
+        direction = QStringLiteral(" [msg] ");
         break;
     case LOG_OTHER:
-        direction = QLatin1String(" ");
+        direction = QStringLiteral(" ");
         break;
     }
     if (message.truncatedBytes) {
         direction += QLatin1String("[truncated] ");
     }
-    return message.timestamp.toString(QLatin1String("hh:mm:ss.zzz")) + QString::number(parser) + QLatin1Char(' ') +
+    return message.timestamp.toString(QStringLiteral("hh:mm:ss.zzz")) + QString::number(parser) + QLatin1Char(' ') +
             direction + message.source + QLatin1Char(' ') + message.message.trimmed();
 }
 

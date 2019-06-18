@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
    Copyright (C) 2012        Mohammed Nafees <nafees.technocool@gmail.com>
    Copyright (C) 2012 Peter Amidon <peter@picnicpark.org>
 
@@ -58,7 +58,7 @@ int SenderIdentitiesModel::rowCount(const QModelIndex &parent) const
     return m_identities.size();
 }
 
-QVariant SenderIdentitiesModel::data(const QModelIndex &index, const int role) const
+QVariant SenderIdentitiesModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || index.row() >= m_identities.size() || index.column() >= COLUMN_LAST)
         return QVariant();
@@ -117,6 +117,7 @@ bool SenderIdentitiesModel::setData(const QModelIndex &index, const QVariant &va
         break;
     case COLUMN_ORGANIZATION:
         m_identities[index.row()].organisation = value.toString();
+        break;
     case COLUMN_SIGNATURE:
         m_identities[index.row()].signature = value.toString();
         break;
@@ -142,7 +143,7 @@ void SenderIdentitiesModel::moveIdentity(const int from, const int to)
     }
 
     bool ok = beginMoveRows(QModelIndex(), from, from, QModelIndex(), targetOffset);
-    Q_ASSERT(ok);
+    Q_ASSERT(ok); Q_UNUSED(ok);
 
     m_identities.move(from, to);
     endMoveRows();
@@ -170,33 +171,16 @@ void SenderIdentitiesModel::loadFromSettings(QSettings &s)
     m_identities.clear();
 
     int num = s.beginReadArray(Common::SettingsNames::identitiesKey);
-    if (num == 0) {
-        s.endArray();
-        // Load from the older format where only one identity was supported
-
-        QString realName = s.value(Common::SettingsNames::obsRealNameKey).toString();
-        QString email = s.value(Common::SettingsNames::obsAddressKey).toString();
-        if (!realName.isEmpty() || !email.isEmpty()) {
-            // Don't add empty identities
-            m_identities << ItemSenderIdentity(realName, email,
-                                               // Old format had no support for signatures/organizations
-                                               QString(), QString());
-        }
-
-        // Thrash the old settings, replace with the new format
-        saveToSettings(s);
-    } else {
-        // The new format with multiple identities
-        for (int i = 0; i < num; ++i) {
-            s.setArrayIndex(i);
-            m_identities << ItemSenderIdentity(
-                                s.value(Common::SettingsNames::realNameKey).toString(),
-                                s.value(Common::SettingsNames::addressKey).toString(),
-                                s.value(Common::SettingsNames::organisationKey).toString(),
-                                s.value(Common::SettingsNames::signatureKey).toString());
-        }
-        s.endArray();
+    // The new format with multiple identities
+    for (int i = 0; i < num; ++i) {
+        s.setArrayIndex(i);
+        m_identities << ItemSenderIdentity(
+                            s.value(Common::SettingsNames::realNameKey).toString(),
+                            s.value(Common::SettingsNames::addressKey).toString(),
+                            s.value(Common::SettingsNames::organisationKey).toString(),
+                            s.value(Common::SettingsNames::signatureKey).toString());
     }
+    s.endArray();
     endResetModel();
 }
 
@@ -211,8 +195,6 @@ void SenderIdentitiesModel::saveToSettings(QSettings &s) const
         s.setValue(Common::SettingsNames::signatureKey, m_identities[i].signature);
     }
     s.endArray();
-    s.remove(Common::SettingsNames::obsRealNameKey);
-    s.remove(Common::SettingsNames::obsAddressKey);
 }
 
 }

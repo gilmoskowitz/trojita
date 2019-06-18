@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -41,6 +41,16 @@ struct MailboxMetadata {
     MailboxMetadata() {}
 };
 
+inline bool operator==(const MailboxMetadata &a, const MailboxMetadata &b)
+{
+    return a.mailbox == b.mailbox && a.separator == b.separator && a.flags == b.flags;
+}
+
+inline bool operator!=(const MailboxMetadata &a, const MailboxMetadata &b)
+{
+    return ! (a == b);
+}
+
 /** @short Class for keeping track of information from the SELECT command */
 class SyncState
 {
@@ -51,7 +61,7 @@ class SyncState
     bool m_hasExists, m_hasRecent, m_hasUnSeenCount, m_hasUnSeenOffset, m_hasUidNext, m_hasUidValidity,
          m_hasHighestModSeq, m_hasFlags, m_hasPermanentFlags;
 
-    friend QDebug operator<<(QDebug &dbg, const Imap::Mailbox::SyncState &state);
+    friend QDebug operator<<(QDebug dbg, const Imap::Mailbox::SyncState &state);
 public:
     SyncState();
     uint exists() const;
@@ -85,6 +95,7 @@ public:
       crap like RECENT.
     */
     bool isUsableForSyncing() const;
+    bool isUsableForSyncingWithoutUidNext() const;
 
     bool isUsableForCondstore() const;
 
@@ -92,12 +103,12 @@ public:
     bool completelyEqualTo(const SyncState &other) const;
 };
 
-QDebug operator<<(QDebug &dbg, const Imap::Mailbox::SyncState &state);
+QDebug operator<<(QDebug dbg, const Imap::Mailbox::SyncState &state);
 
 }
 }
 
-QDebug operator<<(QDebug &dbg, const Imap::Mailbox::MailboxMetadata &metadata);
+QDebug operator<<(QDebug dbg, const Imap::Mailbox::MailboxMetadata &metadata);
 
 QDataStream &operator>>(QDataStream &stream, Imap::Mailbox::SyncState &ss);
 QDataStream &operator<<(QDataStream &stream, const Imap::Mailbox::SyncState &ss);

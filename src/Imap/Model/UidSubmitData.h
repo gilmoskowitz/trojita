@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -25,6 +25,7 @@
 
 #include <QByteArray>
 #include <QPair>
+#include <QVariant>
 
 namespace Imap {
 namespace Mailbox {

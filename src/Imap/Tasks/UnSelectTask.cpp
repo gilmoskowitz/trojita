@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -21,11 +21,11 @@
 */
 
 
-#include <QUuid>
 #include "UnSelectTask.h"
+#include <QUuid>
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
-#include "MailboxTree.h"
 
 namespace Imap
 {
@@ -38,6 +38,7 @@ UnSelectTask::UnSelectTask(Model *model, ImapTask *parentTask) :
     conn = parentTask;
     parser = conn->parser;
     Q_ASSERT(parser);
+    connect(this, &ImapTask::completed, this, &UnSelectTask::resetConnectionState);
 }
 
 void UnSelectTask::perform()
@@ -45,7 +46,7 @@ void UnSelectTask::perform()
     markAsActiveTask(TASK_PREPEND);
 
     if (_dead) {
-        _failed("Asked to die");
+        _failed(tr("Asked to die"));
         return;
     }
     // We really should ignore abort() -- we're a very important task
@@ -53,7 +54,7 @@ void UnSelectTask::perform()
     if (model->accessParser(parser).maintainingTask) {
         model->accessParser(parser).maintainingTask->breakOrCancelPossibleIdle();
     }
-    if (model->accessParser(parser).capabilities.contains("UNSELECT")) {
+    if (model->accessParser(parser).capabilities.contains(QStringLiteral("UNSELECT"))) {
         unSelectTag = parser->unSelect();
     } else {
         doFakeSelect();
@@ -63,7 +64,7 @@ void UnSelectTask::perform()
 void UnSelectTask::doFakeSelect()
 {
     if (_dead) {
-        _failed("Asked to die");
+        _failed(tr("Asked to die"));
         return;
     }
     // Again, ignoring abort()
@@ -72,22 +73,24 @@ void UnSelectTask::doFakeSelect()
         model->accessParser(parser).maintainingTask->breakOrCancelPossibleIdle();
     }
     // The server does not support UNSELECT. Let's construct an unlikely-to-exist mailbox, then.
-    selectMissingTag = parser->examine(QString("trojita non existing %1").arg(QUuid::createUuid().toString()));
+    selectMissingTag = parser->examine(QLatin1String("trojita non existing ") + QUuid::createUuid().toString());
 }
 
 bool UnSelectTask::handleStateHelper(const Imap::Responses::State *const resp)
 {
-    switch (resp->respCode) {
-    case Responses::UNSEEN:
-    case Responses::PERMANENTFLAGS:
-    case Responses::UIDNEXT:
-    case Responses::UIDVALIDITY:
-    case Responses::NOMODSEQ:
-    case Responses::HIGHESTMODSEQ:
-    case Responses::CLOSED:
-        return true;
-    default:
-        break;
+    if (resp->tag.isEmpty()) {
+        switch (resp->respCode) {
+        case Responses::UNSEEN:
+        case Responses::PERMANENTFLAGS:
+        case Responses::UIDNEXT:
+        case Responses::UIDVALIDITY:
+        case Responses::NOMODSEQ:
+        case Responses::HIGHESTMODSEQ:
+        case Responses::CLOSED:
+            return true;
+        default:
+            break;
+        }
     }
     if (!resp->tag.isEmpty()) {
         if (resp->tag == unSelectTag) {
@@ -103,7 +106,7 @@ bool UnSelectTask::handleStateHelper(const Imap::Responses::State *const resp)
         } else if (resp->tag == selectMissingTag) {
             if (resp->kind == Responses::OK) {
                 QTimer::singleShot(0, this, SLOT(doFakeSelect()));
-                log(tr("The emergency EXAMINE command has unexpectedly succeeded, trying to get out of here..."), Common::LOG_MAILBOX_SYNC);
+                log(QStringLiteral("The emergency EXAMINE command has unexpectedly succeeded, trying to get out of here..."), Common::LOG_MAILBOX_SYNC);
             } else {
                 // This is very good :)
                 _completed();
@@ -117,28 +120,28 @@ bool UnSelectTask::handleStateHelper(const Imap::Responses::State *const resp)
 bool UnSelectTask::handleNumberResponse(const Imap::Responses::NumberResponse *const resp)
 {
     Q_UNUSED(resp);
-    log("UnSelectTask: ignoring numeric response", Common::LOG_MAILBOX_SYNC);
+    log(QStringLiteral("UnSelectTask: ignoring numeric response"), Common::LOG_MAILBOX_SYNC);
     return true;
 }
 
 bool UnSelectTask::handleFlags(const Imap::Responses::Flags *const resp)
 {
     Q_UNUSED(resp);
-    log("UnSelectTask: ignoring FLAGS response", Common::LOG_MAILBOX_SYNC);
+    log(QStringLiteral("UnSelectTask: ignoring FLAGS response"), Common::LOG_MAILBOX_SYNC);
     return true;
 }
 
 bool UnSelectTask::handleSearch(const Imap::Responses::Search *const resp)
 {
     Q_UNUSED(resp);
-    log("UnSelectTask: ignoring SEARCH response", Common::LOG_MAILBOX_SYNC);
+    log(QStringLiteral("UnSelectTask: ignoring SEARCH response"), Common::LOG_MAILBOX_SYNC);
     return true;
 }
 
 bool UnSelectTask::handleFetch(const Imap::Responses::Fetch *const resp)
 {
     Q_UNUSED(resp);
-    log("UnSelectTask: ignoring FETCH response", Common::LOG_MAILBOX_SYNC);
+    log(QStringLiteral("UnSelectTask: ignoring FETCH response"), Common::LOG_MAILBOX_SYNC);
     return true;
 }
 
@@ -147,6 +150,15 @@ QVariant UnSelectTask::taskData(const int role) const
 {
     Q_UNUSED(role);
     return QVariant();
+}
+
+/** @short Reset the "waiting for [CLOSED]" state */
+void UnSelectTask::resetConnectionState()
+{
+    auto const state = model->accessParser(parser).connState;
+    if (state > CONN_STATE_AUTHENTICATED && state < CONN_STATE_LOGOUT) {
+        model->changeConnectionState(parser, CONN_STATE_AUTHENTICATED);
+    }
 }
 
 }

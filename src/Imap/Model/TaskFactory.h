@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -31,6 +31,7 @@
 #include "FlagsOperation.h"
 #include "SubscribeUnSubscribeOperation.h"
 #include "UidSubmitData.h"
+#include "Imap/Parser/Uids.h"
 
 namespace Imap
 {
@@ -55,6 +56,7 @@ class NumberOfMessagesTask;
 class ObtainSynchronizedMailboxTask;
 class OpenConnectionTask;
 class UpdateFlagsTask;
+class UpdateFlagsOfAllMessagesTask;
 class ThreadTask;
 class NoopTask;
 class UnSelectTask;
@@ -78,8 +80,8 @@ public:
     virtual DeleteMailboxTask *createDeleteMailboxTask(Model *model, const QString &mailbox);
     virtual EnableTask *createEnableTask(Model *model, ImapTask *dependingTask, const QList<QByteArray> &extensions);
     virtual ExpungeMailboxTask *createExpungeMailboxTask(Model *model, const QModelIndex &mailbox);
-    virtual FetchMsgMetadataTask *createFetchMsgMetadataTask(Model *model, const QModelIndex &mailbox, const QList<uint> &uid);
-    virtual FetchMsgPartTask *createFetchMsgPartTask(Model *model, const QModelIndex &mailbox, const QList<uint> &uids, const QStringList &parts);
+    virtual FetchMsgMetadataTask *createFetchMsgMetadataTask(Model *model, const QModelIndex &mailbox, const Imap::Uids &uid);
+    virtual FetchMsgPartTask *createFetchMsgPartTask(Model *model, const QModelIndex &mailbox, const Imap::Uids &uids, const QList<QByteArray> &parts);
     virtual GetAnyConnectionTask *createGetAnyConnectionTask(Model *model);
     virtual IdTask *createIdTask(Model *model, ImapTask *dependingTask);
     virtual KeepMailboxOpenTask *createKeepMailboxOpenTask(Model *model, const QModelIndex &mailbox, Parser *oldParser);
@@ -88,6 +90,8 @@ public:
     virtual ObtainSynchronizedMailboxTask *createObtainSynchronizedMailboxTask(Model *model, const QModelIndex &mailboxIndex,
             ImapTask *parentTask, KeepMailboxOpenTask *keepTask);
     virtual OpenConnectionTask *createOpenConnectionTask(Model *model);
+    virtual UpdateFlagsOfAllMessagesTask *createUpdateFlagsOfAllMessagesTask(Model *model, const QModelIndex &mailbox,
+            const FlagsOperation flagOperation, const QString &flags);
     virtual UpdateFlagsTask *createUpdateFlagsTask(Model *model, const QModelIndexList &messages, const FlagsOperation flagOperation,
             const QString &flags);
     virtual UpdateFlagsTask *createUpdateFlagsTask(Model *model, CopyMoveMessagesTask *copyTask,
@@ -102,7 +106,9 @@ public:
                                          const QStringList &flags, const QDateTime &timestamp);
     virtual AppendTask *createAppendTask(Model *model, const QString &targetMailbox, const QList<CatenatePair> &data,
                                          const QStringList &flags, const QDateTime &timestamp);
-    virtual SubscribeUnsubscribeTask *createSubscribeUnsubscribeTask(Model *model, const QModelIndex &mailbox,
+    virtual SubscribeUnsubscribeTask *createSubscribeUnsubscribeTask(Model *model, const QString &mailboxName,
+                                                                     const SubscribeUnsubscribeOperation operation);
+    virtual SubscribeUnsubscribeTask *createSubscribeUnsubscribeTask(Model *model, ImapTask *parentTask, const QString &mailboxName,
                                                                      const SubscribeUnsubscribeOperation operation);
     virtual GenUrlAuthTask *createGenUrlAuthTask(Model *model, const QString &host, const QString &user, const QString &mailbox,
                                                  const uint uidValidity, const uint uid, const QString &part, const QString &access);
@@ -123,7 +129,7 @@ private:
     Parser *newParser(Model *model);
 };
 
-typedef std::auto_ptr<TaskFactory> TaskFactoryPtr;
+typedef std::unique_ptr<TaskFactory> TaskFactoryPtr;
 
 }
 }

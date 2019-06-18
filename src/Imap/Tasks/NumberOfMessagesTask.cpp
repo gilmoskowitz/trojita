@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,10 @@
 
 
 #include "NumberOfMessagesTask.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "GetAnyConnectionTask.h"
-#include "ItemRoles.h"
-#include "Model.h"
-#include "MailboxTree.h"
 
 namespace Imap
 {
@@ -36,8 +36,7 @@ namespace Mailbox
 NumberOfMessagesTask::NumberOfMessagesTask(Model *model, const QModelIndex &mailbox):
     ImapTask(model), mailboxIndex(mailbox)
 {
-    TreeItemMailbox *mailboxPtr = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailbox.internalPointer()));
-    Q_ASSERT(mailboxPtr);
+    Q_ASSERT(dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailbox.internalPointer())));
     conn = model->m_taskFactory->createGetAnyConnectionTask(model);
     conn->addDependentTask(this);
 }
@@ -51,7 +50,7 @@ void NumberOfMessagesTask::perform()
 
     if (! mailboxIndex.isValid()) {
         // FIXME: add proper fix
-        log("Mailbox vanished before we could ask for number of messages inside");
+        log(QStringLiteral("Mailbox vanished before we could ask for number of messages inside"));
         _completed();
         return;
     }
@@ -64,7 +63,7 @@ void NumberOfMessagesTask::perform()
 /** @short What kind of information are we interested in? */
 QStringList NumberOfMessagesTask::requestedStatusOptions()
 {
-    return QStringList() << QLatin1String("MESSAGES") << QLatin1String("UNSEEN") << QLatin1String("RECENT");
+    return QStringList() << QStringLiteral("MESSAGES") << QStringLiteral("UNSEEN") << QStringLiteral("RECENT");
 }
 
 bool NumberOfMessagesTask::handleStateHelper(const Imap::Responses::State *const resp)
@@ -76,7 +75,7 @@ bool NumberOfMessagesTask::handleStateHelper(const Imap::Responses::State *const
         if (resp->kind == Responses::OK) {
             _completed();
         } else {
-            _failed("STATUS has failed");
+            _failed(tr("STATUS has failed"));
             // FIXME: error handling
         }
         return true;
@@ -88,11 +87,11 @@ bool NumberOfMessagesTask::handleStateHelper(const Imap::Responses::State *const
 QString NumberOfMessagesTask::debugIdentification() const
 {
     if (! mailboxIndex.isValid())
-        return QLatin1String("[invalid mailboxIndex]");
+        return QStringLiteral("[invalid mailboxIndex]");
 
     TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
     Q_ASSERT(mailbox);
-    return QString::fromUtf8("attached to %1").arg(mailbox->mailbox());
+    return QStringLiteral("attached to %1").arg(mailbox->mailbox());
 }
 
 QVariant NumberOfMessagesTask::taskData(const int role) const

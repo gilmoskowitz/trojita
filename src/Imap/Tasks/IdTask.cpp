@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -21,12 +21,12 @@
 */
 
 
+#include "Common/Application.h"
 #include "IdTask.h"
-#include <QCoreApplication>
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/Utils.h"
 #include "GetAnyConnectionTask.h"
-#include "ItemRoles.h"
-#include "Model.h"
-#include "../Model/Utils.h"
 
 namespace Imap
 {
@@ -45,15 +45,13 @@ void IdTask::perform()
 
     IMAP_TASK_CHECK_ABORT_DIE;
 
-    if (model->property("trojita-imap-enable-id").toBool()) {
-        QMap<QByteArray,QByteArray> identification;
-        identification["name"] = "Trojita";
-        identification["version"] = QCoreApplication::applicationVersion().toUtf8();
+    QMap<QByteArray,QByteArray> identification;
+    identification["name"] = "Trojita";
+    if (!model->property("trojita-imap-id-no-versions").toBool()) {
+        identification["version"] = Common::Application::version.toUtf8();
         identification["os"] = systemPlatformVersion().toUtf8();
-        tag = parser->idCommand(identification);
-    } else {
-        tag = parser->idCommand();
     }
+    tag = parser->idCommand(identification);
 }
 
 bool IdTask::handleStateHelper(const Imap::Responses::State *const resp)
@@ -66,7 +64,7 @@ bool IdTask::handleStateHelper(const Imap::Responses::State *const resp)
             // nothing should be needed here
             _completed();
         } else {
-            _failed("ID failed, strange");
+            _failed(tr("ID failed, strange"));
             // But hey, we can just ignore this one
         }
         return true;

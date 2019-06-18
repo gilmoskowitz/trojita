@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,8 +22,8 @@
 
 #include "GetAnyConnectionTask.h"
 #include <QTimer>
+#include "Imap/Model/MailboxTree.h"
 #include "KeepMailboxOpenTask.h"
-#include "MailboxTree.h"
 #include "OfflineConnectionTask.h"
 #include "OpenConnectionTask.h"
 
@@ -48,7 +48,7 @@ GetAnyConnectionTask::GetAnyConnectionTask(Model *model) :
 
     if (it == model->m_parsers.end()) {
         // We're creating a completely new connection
-        if (model->networkPolicy() == Model::NETWORK_OFFLINE) {
+        if (model->networkPolicy() == NETWORK_OFFLINE) {
             // ...but we're offline -> too bad, got to fail
             newConn = new OfflineConnectionTask(model);
             newConn->addDependentTask(this);

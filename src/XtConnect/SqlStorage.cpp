@@ -66,7 +66,7 @@ void SqlStorage::open()
         db.setPassword( _password );
 
     if ( ! db.open() ) {
-        _fail( "Failed to open database connection", db );
+        _fail( QLatin1String("Failed to open database connection"), db );
     }
 
     _prepareStatements();
@@ -77,7 +77,7 @@ void SqlStorage::_prepareStatements()
     _queryFindMailBody = XSqlQuery(db);
     if ( ! _queryFindMailBody.prepare( QLatin1String("SELECT emlbody_id FROM xtbatch.emlbody "
                                                      " WHERE :emlbody_hash=emlbody_hash::bytea;")) )
-                                                     _fail( "Failed to prepare query _queryFindMailBody", _queryFindMailBody );
+                                                     _fail( QLatin1String("Failed to prepare query _queryFindMailBody"), _queryFindMailBody );
 
     _queryInsertMailBody = XSqlQuery(db);
     if ( ! _queryInsertMailBody.prepare( QLatin1String("INSERT INTO xtbatch.emlbody "
@@ -85,7 +85,7 @@ void SqlStorage::_prepareStatements()
                                                    "VALUES "
                                                    "(:emlbody_hash, :emlbody_body, :emlbody_msg) "
                                                    "returning emlbody_id;")) )
-                                                    _fail( "Failed to prepare query _queryInsertMailBody", _queryInsertMailBody );
+                                                    _fail( QLatin1String("Failed to prepare query _queryInsertMailBody"), _queryInsertMailBody );
 
     _queryInsertMail = XSqlQuery(db);
     if ( ! _queryInsertMail.prepare( QLatin1String("INSERT INTO xtbatch.eml "
@@ -93,18 +93,18 @@ void SqlStorage::_prepareStatements()
                                                    "VALUES "
                                                    "(:eml_date, :eml_subj, :eml_emlbody_id, 'I') "
                                                    "returning eml_id;")) )
-                                                    _fail( "Failed to prepare query _queryInsertMail", _queryInsertMail );
+                                                    _fail( QLatin1String("Failed to prepare query _queryInsertMail"), _queryInsertMail );
 
     _queryInsertAddress = XSqlQuery(db);
     if ( ! _queryInsertAddress.prepare( QLatin1String("INSERT INTO xtbatch.emladdr "
                                                       "(emladdr_eml_id, emladdr_type, emladdr_addr, emladdr_name) "
                                                       "VALUES (:emladdr_eml_id, :emladdr_type, :emladdr_addr, "
                                                       ":emladdr_name)") ) )
-        _fail( "Failed to prepare query _queryInsertAddress", _queryInsertAddress );
+        _fail( QLatin1String("Failed to prepare query _queryInsertAddress"), _queryInsertAddress );
 
     _queryMarkMailReady = QSqlQuery(db);
     if ( ! _queryMarkMailReady.prepare( QLatin1String("UPDATE xtbatch.eml SET eml_status = 'O' WHERE eml_id = ?") ) )
-        _fail( "Failed to prepare query _queryMarkMailReady", _queryMarkMailReady );
+        _fail( QLatin1String("Failed to prepare query _queryMarkMailReady"), _queryMarkMailReady );
 }
 
 SqlStorage::ResultType SqlStorage::insertMail( const QDateTime &dateTime, const QString &subject, const QString &readableText, const QByteArray &headers, const QByteArray &body, quint64 &emlId )
@@ -113,38 +113,41 @@ SqlStorage::ResultType SqlStorage::insertMail( const QDateTime &dateTime, const 
     int emlBodyId;
 
     if (DEBUG) qDebug() << "insertMail" << hashValue;
-    _queryFindMailBody.bindValue( ":emlbody_hash", hashValue );
+    _queryFindMailBody.bindValue( QLatin1String(":emlbody_hash"), hashValue );
     if ( ! _queryFindMailBody.exec() ) {
-        _fail( "Query _queryFindMailBody failed", _queryFindMailBody );
+        _fail( QLatin1String("Query _queryFindMailBody failed"), _queryFindMailBody );
         return RESULT_ERROR;
     } else if ( _queryFindMailBody.first() ) {
         emlBodyId = _queryFindMailBody.value( 0 ).toULongLong();
     } else {
         if (DEBUG) qDebug() << "insertMail about to insert" << hashValue << readableText;
-        _queryInsertMailBody.bindValue( ":emlbody_hash", hashValue );
-        _queryInsertMailBody.bindValue( ":emlbody_body", readableText );
-        _queryInsertMailBody.bindValue( ":emlbody_msg", headers + body);
+        _queryInsertMailBody.bindValue( QLatin1String(":emlbody_hash"), hashValue );
+        _queryInsertMailBody.bindValue( QLatin1String(":emlbody_body"), readableText );
+        _queryInsertMailBody.bindValue( QLatin1String(":emlbody_msg"), QVariant(headers + body));
 
         if ( ! _queryInsertMailBody.exec() ) {
-            _fail( "Query _queryInsertMailBody failed", _queryInsertMailBody );
+            _fail( QLatin1String("Query _queryInsertMailBody failed"), _queryInsertMailBody );
             return RESULT_ERROR;
         } else if ( _queryInsertMailBody.first() ) {
             emlBodyId = _queryInsertMailBody.value( 0 ).toULongLong();
         } else {
             if ( _queryInsertMailBody.lastError().type() != QSqlError::NoError)
-              _fail( "Query _queryInsertMailBody failed", _queryInsertMailBody );
+              _fail( QLatin1String("Query _queryInsertMailBody failed"), _queryInsertMailBody );
             else
-              _fail( "Query _queryInsertMailBody returned no rows", _queryInsertMailBody );
+              _fail( QLatin1String("Query _queryInsertMailBody returned no rows"), _queryInsertMailBody );
             return RESULT_ERROR;
         }
     }
 
-    _queryInsertMail.bindValue( ":eml_date", dateTime );
-    _queryInsertMail.bindValue( ":eml_subj", subject );
-    _queryInsertMail.bindValue( ":eml_emlbody_id", emlBodyId );
+    _queryInsertMail.bindValue( QLatin1String(":eml_hash"), hashValue );
+    // Use ISODate, because it will specify that the time is in UTC.
+    // Otherwise time is assumed to be local which would be bad
+    _queryInsertMail.bindValue( QLatin1String(":eml_date"), dateTime.toString(Qt::ISODate));
+    _queryInsertMail.bindValue( QLatin1String(":eml_subj"), subject );
+    _queryInsertMail.bindValue( QLatin1String(":eml_emlbody_id"), emlBodyId );
 
     if ( ! _queryInsertMail.exec() ) {
-        _fail( "Query _queryInsertMail failed", _queryInsertMail );
+        _fail( QLatin1String("Query _queryInsertMail failed"), _queryInsertMail );
         return RESULT_ERROR;
     }
 
@@ -188,7 +191,7 @@ SqlStorage::ResultType SqlStorage::insertAddress( const quint64 emlId, const QSt
     _queryInsertAddress.bindValue( QLatin1String(":emladdr_name"), name );
 
     if ( ! _queryInsertAddress.exec() ) {
-        _fail( "Query _queryInsertAddress failed", _queryInsertAddress );
+        _fail( QLatin1String("Query _queryInsertAddress failed"), _queryInsertAddress );
         return RESULT_ERROR;
     }
 
@@ -200,7 +203,7 @@ SqlStorage::ResultType SqlStorage::markMailReady( const quint64 emlId )
     _queryMarkMailReady.bindValue( 0, emlId );
 
     if ( ! _queryMarkMailReady.exec() ) {
-        _fail( "Query _queryMarkMailReady failed", _queryMarkMailReady );
+        _fail( QLatin1String("Query _queryMarkMailReady failed"), _queryMarkMailReady );
         return RESULT_ERROR;
     }
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -20,18 +20,22 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include<sstream>
+#include <sstream>
 #include "KeepMailboxOpenTask.h"
+#include "Common/InvokeMethod.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/MailboxTree.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/TaskFactory.h"
+#include "Imap/Model/TaskPresentationModel.h"
+#include "DeleteMailboxTask.h"
 #include "FetchMsgMetadataTask.h"
 #include "FetchMsgPartTask.h"
+#include "IdleLauncher.h"
 #include "OpenConnectionTask.h"
 #include "ObtainSynchronizedMailboxTask.h"
 #include "OfflineConnectionTask.h"
-#include "IdleLauncher.h"
-#include "MailboxTree.h"
-#include "Model.h"
 #include "SortTask.h"
-#include "TaskFactory.h"
 #include "NoopTask.h"
 #include "UnSelectTask.h"
 
@@ -40,13 +44,10 @@ namespace Imap
 namespace Mailbox
 {
 
-/*
-FIXME: we should eat "* OK [CLOSED] former mailbox closed", or somehow let it fall down to the model, which shouldn't delegate it to AuthenticatedHandler
-*/
-
 KeepMailboxOpenTask::KeepMailboxOpenTask(Model *model, const QModelIndex &mailboxIndex, Parser *oldParser) :
-    ImapTask(model), mailboxIndex(mailboxIndex), synchronizeConn(0), shouldExit(false), isRunning(false),
-    shouldRunNoop(false), shouldRunIdle(false), idleLauncher(0), unSelectTask(0)
+    ImapTask(model), mailboxIndex(mailboxIndex), synchronizeConn(0), shouldExit(false), isRunning(Running::NOT_YET),
+    shouldRunNoop(false), shouldRunIdle(false), idleLauncher(0), unSelectTask(0),
+    m_skippedStateSynces(0), m_performedStateSynces(0), m_syncingTimer(nullptr)
 {
     Q_ASSERT(mailboxIndex.isValid());
     Q_ASSERT(mailboxIndex.model() == model);
@@ -75,6 +76,11 @@ KeepMailboxOpenTask::KeepMailboxOpenTask(Model *model, const QModelIndex &mailbo
             // let's just wait till we get a chance to play
             synchronizeConn = model->m_taskFactory->
                               createObtainSynchronizedMailboxTask(model, mailboxIndex, model->accessParser(oldParser).maintainingTask, this);
+        } else if (model->accessParser(parser).connState < CONN_STATE_AUTHENTICATED) {
+            // The parser is still in the process of being initialized, let's wait until it's completed
+            Q_ASSERT(!model->accessParser(oldParser).activeTasks.isEmpty());
+            ImapTask *task = model->accessParser(oldParser).activeTasks.front();
+            synchronizeConn = model->m_taskFactory->createObtainSynchronizedMailboxTask(model, mailboxIndex, task, this);
         } else {
             // The parser is free, or at least there's no KeepMailboxOpenTask associated with it.
             // There's no mailbox besides us in the game, yet, so we can simply schedule us for immediate execution.
@@ -88,11 +94,11 @@ KeepMailboxOpenTask::KeepMailboxOpenTask(Model *model, const QModelIndex &mailbo
 
         // We shall catch destruction of any preexisting tasks so that we can properly launch IDLE etc in response to their termination
         Q_FOREACH(ImapTask *task, model->accessParser(parser).activeTasks) {
-            connect(task, SIGNAL(destroyed(QObject*)), this, SLOT(slotTaskDeleted(QObject*)));
+            connect(task, &QObject::destroyed, this, &KeepMailboxOpenTask::slotTaskDeleted);
         }
     } else {
         ImapTask *conn = 0;
-        if (model->networkPolicy() == Model::NETWORK_OFFLINE) {
+        if (model->networkPolicy() == NETWORK_OFFLINE) {
             // Well, except that we cannot really open a new connection now
             conn = new OfflineConnectionTask(model);
         } else {
@@ -108,7 +114,7 @@ KeepMailboxOpenTask::KeepMailboxOpenTask(Model *model, const QModelIndex &mailbo
 
     // Setup the timer for NOOPing. It won't get started at this time, though.
     noopTimer = new QTimer(this);
-    connect(noopTimer, SIGNAL(timeout()), this, SLOT(slotPerformNoop()));
+    connect(noopTimer, &QTimer::timeout, this, &KeepMailboxOpenTask::slotPerformNoop);
     bool ok;
     int timeout = model->property("trojita-imap-noop-period").toUInt(&ok);
     if (! ok)
@@ -117,7 +123,7 @@ KeepMailboxOpenTask::KeepMailboxOpenTask(Model *model, const QModelIndex &mailbo
     noopTimer->setSingleShot(true);
 
     fetchPartTimer = new QTimer(this);
-    connect(fetchPartTimer, SIGNAL(timeout()), this, SLOT(slotFetchRequestedParts()));
+    connect(fetchPartTimer, &QTimer::timeout, this, &KeepMailboxOpenTask::slotFetchRequestedParts);
     timeout = model->property("trojita-imap-delayed-fetch-part").toUInt(&ok);
     if (! ok)
         timeout = 50;
@@ -125,7 +131,7 @@ KeepMailboxOpenTask::KeepMailboxOpenTask(Model *model, const QModelIndex &mailbo
     fetchPartTimer->setSingleShot(true);
 
     fetchEnvelopeTimer = new QTimer(this);
-    connect(fetchEnvelopeTimer, SIGNAL(timeout()), this, SLOT(slotFetchRequestedEnvelopes()));
+    connect(fetchEnvelopeTimer, &QTimer::timeout, this, &KeepMailboxOpenTask::slotFetchRequestedEnvelopes);
     fetchEnvelopeTimer->setInterval(0); // message metadata is pretty important, hence an immediate fetch
     fetchEnvelopeTimer->setSingleShot(true);
 
@@ -147,6 +153,18 @@ KeepMailboxOpenTask::KeepMailboxOpenTask(Model *model, const QModelIndex &mailbo
 
     CHECK_TASK_TREE
     emit model->mailboxSyncingProgress(mailboxIndex, STATE_WAIT_FOR_CONN);
+
+    /** @short How often to reset the time window (in ms) for determining mass-change mode */
+    const int throttlingWindowLength = 1000;
+
+    m_syncingTimer = new QTimer(this);
+    m_syncingTimer->setSingleShot(true);
+    // This timeout specifies how long we're going to wait for an incoming reply which usually triggers state syncing.
+    // If no such response arrives during this time window, the changes are saved on disk; if, however, something does
+    // arrive, the rate of saving is only moderated based on the number of reponses which were already received,
+    // but which did not result in state saving yet.
+    m_syncingTimer->setInterval(throttlingWindowLength);
+    connect(m_syncingTimer, &QTimer::timeout, this, &KeepMailboxOpenTask::syncingTimeout);
 }
 
 void KeepMailboxOpenTask::slotPerformConnection()
@@ -155,12 +173,12 @@ void KeepMailboxOpenTask::slotPerformConnection()
     Q_ASSERT(synchronizeConn);
     Q_ASSERT(!synchronizeConn->isFinished());
     if (_dead) {
-        _failed("Asked to die");
-        synchronizeConn->die();
+        _failed(tr("Asked to die"));
+        synchronizeConn->die(QStringLiteral("KeepMailboxOpenTask died before the sync started"));
         return;
     }
 
-    connect(synchronizeConn, SIGNAL(destroyed(QObject *)), this, SLOT(slotTaskDeleted(QObject *)));
+    connect(synchronizeConn, &QObject::destroyed, this, &KeepMailboxOpenTask::slotTaskDeleted);
     synchronizeConn->perform();
 }
 
@@ -173,8 +191,12 @@ void KeepMailboxOpenTask::addDependentTask(ImapTask *task)
 
     breakOrCancelPossibleIdle();
 
-    ObtainSynchronizedMailboxTask *obtainTask = qobject_cast<ObtainSynchronizedMailboxTask *>(task);
-    if (obtainTask) {
+    DeleteMailboxTask *deleteTask = qobject_cast<DeleteMailboxTask*>(task);
+    if (!deleteTask || deleteTask->mailbox != mailboxIndex.data(RoleMailboxName).toString()) {
+        deleteTask = 0;
+    }
+
+    if (ObtainSynchronizedMailboxTask *obtainTask = qobject_cast<ObtainSynchronizedMailboxTask *>(task)) {
         // Another KeepMailboxOpenTask would like to replace us, so we shall die, eventually.
         // This branch is reimplemented from ImapTask
 
@@ -183,7 +205,7 @@ void KeepMailboxOpenTask::addDependentTask(ImapTask *task)
         shouldExit = true;
         task->updateParentTask(this);
 
-        // Before we can die, though, we have to accomodate fetch requests for all envelopes and parts queued so far.
+        // Before we can die, though, we have to accommodate fetch requests for all envelopes and parts queued so far.
         slotFetchRequestedEnvelopes();
         slotFetchRequestedParts();
 
@@ -194,9 +216,27 @@ void KeepMailboxOpenTask::addDependentTask(ImapTask *task)
         Q_FOREACH(ImapTask *abortable, abortableTasks) {
             abortable->abort();
         }
+    } else if (deleteTask) {
+        // Got a request to delete the current mailbox. Fair enough, here we go!
+
+        if (hasPendingInternalActions() || (synchronizeConn && !synchronizeConn->isFinished())) {
+            // Hmm, this is bad -- the caller has instructed us to delete the current mailbox, but we still have
+            // some pending actions (or have not even started yet). Better reject the request for deleting than lose some data.
+            // Alternatively, we might pretend that we're a performance-oriented library and "optimize out" the
+            // data transfer by deleting early :)
+            deleteTask->mailboxHasPendingActions();
+            return;
+        }
+
+        m_deleteCurrentMailboxTask = deleteTask;
+        shouldExit = true;
+        connect(task, &QObject::destroyed, this, &KeepMailboxOpenTask::slotTaskDeleted);
+        ImapTask::addDependentTask(task);
+        QTimer::singleShot(0, this, SLOT(slotActivateTasks()));
+
     } else {
         // This branch calls the inherited ImapTask::addDependentTask()
-        connect(task, SIGNAL(destroyed(QObject *)), this, SLOT(slotTaskDeleted(QObject *)));
+        connect(task, &QObject::destroyed, this, &KeepMailboxOpenTask::slotTaskDeleted);
         ImapTask::addDependentTask(task);
         if (task->needsMailbox()) {
             // it's a task which is tied to a particular mailbox
@@ -213,10 +253,16 @@ void KeepMailboxOpenTask::slotTaskDeleted(QObject *object)
     if (_finished)
         return;
 
+    if (!model) {
+        // we're very likely hitting this during some rather unclean destruction -> ignore this and die ASAP
+        // See https://bugs.kde.org/show_bug.cgi?id=336090
+        return;
+    }
+
     if (!model->m_parsers.contains(parser)) {
         // The parser is gone; we have to get out of here ASAP
-        _failed("Parser is gone");
-        die();
+        _failed(tr("Parser is gone"));
+        die(tr("Parser is gone"));
         return;
     }
     // FIXME: abort/die
@@ -254,7 +300,9 @@ void KeepMailboxOpenTask::terminate()
         return;
     }
     abort();
-    detachFromMailbox();
+
+    m_syncingTimer->stop();
+    syncingTimeout();
 
     // FIXME: abort/die
 
@@ -264,15 +312,13 @@ void KeepMailboxOpenTask::terminate()
     Q_ASSERT(requestedEnvelopes.isEmpty());
     Q_ASSERT(runningTasksForThisMailbox.isEmpty());
     Q_ASSERT(abortableTasks.isEmpty());
+    Q_ASSERT(!m_syncingTimer->isActive());
+    Q_ASSERT(m_skippedStateSynces == 0);
 
     // Break periodic activities
-    if (idleLauncher) {
-        // got to break the IDLE cycle and especially make sure it won't restart
-        idleLauncher->die();
-    }
     shouldRunIdle = false;
     shouldRunNoop = false;
-    isRunning = false;
+    isRunning = Running::NOT_ANYMORE;
 
     // Merge the lists of waiting tasks
     if (!waitingObtainTasks.isEmpty()) {
@@ -295,12 +341,18 @@ void KeepMailboxOpenTask::terminate()
         // And launch the replacement
         first->keepTaskChild->waitingObtainTasks = waitingObtainTasks + first->keepTaskChild->waitingObtainTasks;
         model->accessParser(parser).maintainingTask = first->keepTaskChild;
+        // make sure that if the SELECT dies uncleanly, such as with a missing [CLOSED], we get killed as well
+        connect(first->keepTaskChild, &ImapTask::failed, this, &KeepMailboxOpenTask::finalizeTermination);
         first->keepTaskChild->slotPerformConnection();
     } else {
         Q_ASSERT(dependentTasks.isEmpty());
     }
-    _finished = true;
-    emit completed(this);
+    if (model->accessParser(parser).connState == CONN_STATE_SELECTING_WAIT_FOR_CLOSE) {
+        // we have to be kept busy, otherwise the responses which are still destined for *this* mailbox would
+        // get delivered to the new one
+    } else {
+        finalizeTermination();
+    }
     CHECK_TASK_TREE
 }
 
@@ -314,7 +366,7 @@ void KeepMailboxOpenTask::perform()
     synchronizeConn = 0; // will get deleted by Model
     markAsActiveTask();
 
-    isRunning = true;
+    isRunning = Running::RUNNING;
     fetchPartTimer->start();
     fetchEnvelopeTimer->start();
 
@@ -324,7 +376,7 @@ void KeepMailboxOpenTask::perform()
 
     activateTasks();
 
-    if (model->accessParser(parser).capabilitiesFresh && model->accessParser(parser).capabilities.contains("IDLE")) {
+    if (model->accessParser(parser).capabilitiesFresh && model->accessParser(parser).capabilities.contains(QStringLiteral("IDLE"))) {
         shouldRunIdle = true;
     } else {
         shouldRunNoop = true;
@@ -345,7 +397,7 @@ void KeepMailboxOpenTask::resynchronizeMailbox()
 {
     // FIXME: abort/die
 
-    if (isRunning) {
+    if (isRunning != Running::NOT_YET) {
         // Instead of wild magic with re-creating synchronizeConn, it's way easier to
         // just have us replaced by another KeepMailboxOpenTask
         model->m_taskFactory->createKeepMailboxOpenTask(model, mailboxIndex, parser);
@@ -355,19 +407,31 @@ void KeepMailboxOpenTask::resynchronizeMailbox()
     }
 }
 
+#define CHECK_IS_RUNNING \
+    switch (isRunning) { \
+    case Running::NOT_YET: \
+        return false; \
+    case Running::NOT_ANYMORE: \
+        /* OK, a lost reply -- we're already switching to another mailbox, and even though this might seem */ \
+        /* to be a safe change, we just cannot react to this right now :(. */ \
+        /* Also, don't eat further replies once we're dead :) */ \
+        return model->accessParser(parser).connState == CONN_STATE_SELECTING_WAIT_FOR_CLOSE; \
+    case Running::RUNNING: \
+        /* normal state -> handle this */ \
+        break; \
+    }
+
 bool KeepMailboxOpenTask::handleNumberResponse(const Imap::Responses::NumberResponse *const resp)
 {
     if (_dead) {
-        _failed("Asked to die");
+        _failed(tr("Asked to die"));
         return true;
     }
 
     if (dieIfInvalidMailbox())
         return true;
 
-    // FIXME: add proper boundaries
-    if (! isRunning)
-        return false;
+    CHECK_IS_RUNNING
 
     TreeItemMailbox *mailbox = Model::mailboxForSomeItem(mailboxIndex);
     Q_ASSERT(mailbox);
@@ -377,8 +441,7 @@ bool KeepMailboxOpenTask::handleNumberResponse(const Imap::Responses::NumberResp
     if (resp->kind == Imap::Responses::EXPUNGE) {
         mailbox->handleExpunge(model, *resp);
         mailbox->syncState.setExists(mailbox->syncState.exists() - 1);
-        model->cache()->setMailboxSyncState(mailbox->mailbox(), mailbox->syncState);
-        model->saveUidMap(list);
+        saveSyncStateNowOrLater(mailbox);
         return true;
     } else if (resp->kind == Imap::Responses::EXISTS) {
 
@@ -388,8 +451,6 @@ bool KeepMailboxOpenTask::handleNumberResponse(const Imap::Responses::NumberResp
         }
 
         mailbox->handleExists(model, *resp);
-        model->cache()->clearUidMapping(mailbox->mailbox());
-        model->cache()->setMailboxSyncState(mailbox->mailbox(), mailbox->syncState);
 
         breakOrCancelPossibleIdle();
 
@@ -410,12 +471,14 @@ bool KeepMailboxOpenTask::handleNumberResponse(const Imap::Responses::NumberResp
                                                 // No messages, or no messages with valid UID -> use the UIDNEXT from the syncing state
                                                 // but prevent a possible invalid 0:*
                                                 qMax(mailbox->syncState.uidNext(), 1u)
-                                            ), QStringList() << QLatin1String("FLAGS")));
+                                            ), QList<QByteArray>() << "FLAGS"));
+        model->m_taskModel->slotTaskMighHaveChanged(this);
         return true;
     } else if (resp->kind == Imap::Responses::RECENT) {
         mailbox->syncState.setRecent(resp->number);
         list->m_recentMessageCount = resp->number;
         model->emitMessageCountChanged(mailbox);
+        saveSyncStateNowOrLater(mailbox);
         return true;
     } else {
         return false;
@@ -425,16 +488,14 @@ bool KeepMailboxOpenTask::handleNumberResponse(const Imap::Responses::NumberResp
 bool KeepMailboxOpenTask::handleVanished(const Responses::Vanished *const resp)
 {
     if (_dead) {
-        _failed("Asked to die");
+        _failed(tr("Asked to die"));
         return true;
     }
 
     if (dieIfInvalidMailbox())
         return true;
 
-    // FIXME: add proper boundaries
-    if (! isRunning)
-        return false;
+    CHECK_IS_RUNNING
 
     if (resp->earlier != Responses::Vanished::NOT_EARLIER)
         return false;
@@ -443,6 +504,7 @@ bool KeepMailboxOpenTask::handleVanished(const Responses::Vanished *const resp)
     Q_ASSERT(mailbox);
 
     mailbox->handleVanished(model, *resp);
+    saveSyncStateNowOrLater(mailbox);
     return true;
 }
 
@@ -452,13 +514,11 @@ bool KeepMailboxOpenTask::handleFetch(const Imap::Responses::Fetch *const resp)
         return true;
 
     if (_dead) {
-        _failed("Asked to die");
+        _failed(tr("Asked to die"));
         return true;
     }
 
-    // FIXME: add proper boundaries
-    if (! isRunning)
-        return false;
+    CHECK_IS_RUNNING
 
     TreeItemMailbox *mailbox = Model::mailboxForSomeItem(mailboxIndex);
     Q_ASSERT(mailbox);
@@ -481,6 +541,21 @@ bool KeepMailboxOpenTask::handleStateHelper(const Imap::Responses::State *const 
 
     // FIXME: checks for shouldExit and proper boundaries?
 
+    if (resp->respCode == Responses::CLOSED) {
+        switch (model->accessParser(parser).connState) {
+        case CONN_STATE_SELECTING:
+        case CONN_STATE_SELECTING_WAIT_FOR_CLOSE:
+            model->changeConnectionState(parser, CONN_STATE_SELECTING);
+            finalizeTermination();
+            break;
+        case CONN_STATE_LOGOUT:
+            finalizeTermination();
+            break;
+        default:
+            throw UnexpectedResponseReceived("No other mailbox is being selected, but got a [CLOSED] response", *resp);
+        }
+    }
+
     if (resp->tag.isEmpty())
         return false;
 
@@ -495,7 +570,7 @@ bool KeepMailboxOpenTask::handleStateHelper(const Imap::Responses::State *const 
             }
         } else {
             // The IDLE command has failed. Let's assume it's a permanent error and don't request it in future.
-            log("The IDLE command has failed");
+            log(QStringLiteral("The IDLE command has failed"));
             shouldRunIdle = false;
             idleLauncher->idleCommandFailed();
             idleLauncher->deleteLater();
@@ -512,13 +587,31 @@ bool KeepMailboxOpenTask::handleStateHelper(const Imap::Responses::State *const 
     } else if (newArrivalsFetch.contains(resp->tag)) {
         newArrivalsFetch.removeOne(resp->tag);
 
-        if (resp->kind == Responses::OK) {
-            // FIXME: anything to do here?
-        } else {
-            // FIXME: handling of failure...
+        if (newArrivalsFetch.isEmpty() && mailboxIndex.isValid()) {
+            // No pending commands for fetches of the mailbox state -> we have a consistent and accurate, up-to-date view
+            // -> we should save this
+            TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
+            Q_ASSERT(mailbox);
+            mailbox->saveSyncStateAndUids(model);
+        }
+
+        if (resp->kind != Responses::OK) {
+            _failed(QLatin1String("FETCH of new arrivals failed: ") + resp->message);
         }
         // Don't forget to resume IDLE, if desired; that's easiest by simply behaving as if a "task" has just finished
         slotTaskDeleted(0);
+        model->m_taskModel->slotTaskMighHaveChanged(this);
+        return true;
+    } else if (resp->tag == tagClose) {
+        tagClose.clear();
+        model->changeConnectionState(parser, CONN_STATE_AUTHENTICATED);
+        if (m_deleteCurrentMailboxTask) {
+            m_deleteCurrentMailboxTask->perform();
+        }
+        if (resp->kind != Responses::OK) {
+            _failed(QLatin1String("CLOSE failed: ") + resp->message);
+        }
+        terminate();
         return true;
     } else {
         return false;
@@ -560,15 +653,25 @@ void KeepMailboxOpenTask::detachFromMailbox()
         if (mailbox->maintainingTask == this)
             mailbox->maintainingTask = 0;
     }
+    if (model->m_parsers.contains(parser) && model->accessParser(parser).maintainingTask == this) {
+        model->accessParser(parser).maintainingTask = 0;
+    }
 }
 
 /** @short Reimplemented from ImapTask
 
 We're aksed to die right now, so we better take any depending stuff with us. That poor tasks are not going to outlive me!
 */
-void KeepMailboxOpenTask::die()
+void KeepMailboxOpenTask::die(const QString &message)
 {
-    ImapTask::die();
+    if (shouldExit) {
+        // OK, we're done, and getting killed. This is fine; just don't emit failed()
+        // because we aren't actually failing.
+        // This is a speciality of the KeepMailboxOpenTask because it's the only task
+        // this has a very long life.
+        _finished = true;
+    }
+    ImapTask::die(message);
     detachFromMailbox();
 }
 
@@ -576,29 +679,29 @@ void KeepMailboxOpenTask::die()
 
 Reimplemented from the ImapTask.
 */
-void KeepMailboxOpenTask::killAllPendingTasks()
+void KeepMailboxOpenTask::killAllPendingTasks(const QString &message)
 {
     Q_FOREACH(ImapTask *task, dependingTasksForThisMailbox) {
-        task->die();
+        task->die(message);
     }
     Q_FOREACH(ImapTask *task, dependingTasksNoMailbox) {
-        task->die();
+        task->die(message);
     }
     Q_FOREACH(ImapTask *task, waitingObtainTasks) {
-        task->die();
+        task->die(message);
     }
 }
 
 QString KeepMailboxOpenTask::debugIdentification() const
 {
     if (! mailboxIndex.isValid())
-        return QLatin1String("[invalid mailboxIndex]");
+        return QStringLiteral("[invalid mailboxIndex]");
 
     TreeItemMailbox *mailbox = dynamic_cast<TreeItemMailbox *>(static_cast<TreeItem *>(mailboxIndex.internalPointer()));
     Q_ASSERT(mailbox);
-    return QString::fromUtf8("attached to %1%2%3").arg(mailbox->mailbox(),
-            (synchronizeConn && ! synchronizeConn->isFinished()) ? " [syncConn unfinished]" : "",
-            shouldExit ? " [shouldExit]" : ""
+    return QStringLiteral("attached to %1%2%3").arg(mailbox->mailbox(),
+            (synchronizeConn && ! synchronizeConn->isFinished()) ? QStringLiteral(" [syncConn unfinished]") : QString(),
+            shouldExit ? QStringLiteral(" [shouldExit]") : QString()
                                                        );
 }
 
@@ -607,7 +710,16 @@ void KeepMailboxOpenTask::stopForLogout()
 {
     abort();
     breakOrCancelPossibleIdle();
-    killAllPendingTasks();
+    killAllPendingTasks(tr("Logging off..."));
+
+    // We're supposed to go offline. Given that we're a long-running task, I do not consider this a "failure".
+    // In particular, if the initial SELECT has not finished yet, the ObtainSynchronizedMailboxTask would get
+    // killed as well, and hence the mailboxSyncFailed() signal will get emitted.
+    // The worst thing which can possibly happen is that we're in the middle of checking the new arrivals.
+    // That's bad, because we've got unknown UIDs in our in-memory map, which is going to hurt during the next sync
+    // -- but that's something which should be handled elsewhere, IMHO.
+    // Therefore, make sure a subsequent call to die() doesn't propagate a failure.
+    shouldExit = true;
 }
 
 bool KeepMailboxOpenTask::handleFlags(const Imap::Responses::Flags *const resp)
@@ -628,10 +740,15 @@ void KeepMailboxOpenTask::activateTasks()
 {
     // FIXME: abort/die
 
-    if (!isRunning)
+    if (isRunning != Running::RUNNING)
         return;
 
     breakOrCancelPossibleIdle();
+
+    if (m_deleteCurrentMailboxTask) {
+        closeMailboxDestructively();
+        return;
+    }
 
     slotFetchRequestedEnvelopes();
     slotFetchRequestedParts();
@@ -654,7 +771,7 @@ void KeepMailboxOpenTask::activateTasks()
         idleLauncher->enterIdleLater();
 }
 
-void KeepMailboxOpenTask::requestPartDownload(const uint uid, const QString &partId, const uint estimatedSize)
+void KeepMailboxOpenTask::requestPartDownload(const uint uid, const QByteArray &partId, const uint estimatedSize)
 {
     requestedParts[uid].insert(partId);
     requestedPartSizes[uid] += estimatedSize;
@@ -680,12 +797,12 @@ void KeepMailboxOpenTask::slotFetchRequestedParts()
 
     breakOrCancelPossibleIdle();
 
-    QMap<uint, QSet<QString> >::iterator it = requestedParts.begin();
-    QSet<QString> parts = *it;
+    auto it = requestedParts.begin();
+    auto parts = *it;
 
     // When asked to exit, do as much as possible and die
     while (shouldExit || fetchPartTasks.size() < limitParallelFetchTasks) {
-        QList<uint> uids;
+        Imap::Uids uids;
         uint totalSize = 0;
         while (uids.size() < limitMessagesAtOnce && it != requestedParts.end() && totalSize < limitBytesAtOnce) {
             if (parts != *it)
@@ -711,7 +828,7 @@ void KeepMailboxOpenTask::slotFetchRequestedEnvelopes()
 
     breakOrCancelPossibleIdle();
 
-    QList<uint> fetchNow;
+    Imap::Uids fetchNow;
     if (shouldExit) {
         fetchNow = requestedEnvelopes;
         requestedEnvelopes.clear();
@@ -743,8 +860,8 @@ bool KeepMailboxOpenTask::handleResponseCodeInsideState(const Imap::Responses::S
         const Responses::RespData<uint> *const num = dynamic_cast<const Responses::RespData<uint>* const>(resp->respCodeData.data());
         if (num) {
             mailbox->syncState.setUidNext(num->data);
-            model->cache()->setMailboxSyncState(mailbox->mailbox(), mailbox->syncState);
-            // We shouldn't yeat tagged responses from this context
+            saveSyncStateNowOrLater(mailbox);
+            // We shouldn't eat tagged responses from this context
             return resp->tag.isEmpty();
         } else {
             throw CantHappen("State response has invalid UIDNEXT respCodeData", *resp);
@@ -763,7 +880,7 @@ bool KeepMailboxOpenTask::handleResponseCodeInsideState(const Imap::Responses::S
         const Responses::RespData<QStringList> *const num = dynamic_cast<const Responses::RespData<QStringList>* const>(resp->respCodeData.data());
         if (num) {
             mailbox->syncState.setPermanentFlags(num->data);
-            // We shouldn't yeat tagged responses from this context
+            // We shouldn't eat tagged responses from this context
             return resp->tag.isEmpty();
         } else {
             throw CantHappen("State response has invalid PERMANENTFLAGS respCodeData", *resp);
@@ -780,10 +897,30 @@ bool KeepMailboxOpenTask::handleResponseCodeInsideState(const Imap::Responses::S
         const Responses::RespData<quint64> *const num = dynamic_cast<const Responses::RespData<quint64>* const>(resp->respCodeData.data());
         Q_ASSERT(num);
         mailbox->syncState.setHighestModSeq(num->data);
-        // FIXME: set the UID mapping *and* the HIGHESTMODSEQ at once
-        // model->cache()->setMailboxSyncState(mailbox->mailbox(), mailbox->syncState);
-        // We shouldn't yeat tagged responses from this context
+        saveSyncStateNowOrLater(mailbox);
         return resp->tag.isEmpty();
+    }
+    case Responses::UIDVALIDITY:
+    {
+        if (dieIfInvalidMailbox())
+            return resp->tag.isEmpty();
+
+        TreeItemMailbox *mailbox = Model::mailboxForSomeItem(mailboxIndex);
+        Q_ASSERT(mailbox);
+        const Responses::RespData<uint> *const num = dynamic_cast<const Responses::RespData<uint>* const>(resp->respCodeData.data());
+        Q_ASSERT(num);
+        if (mailbox->syncState.uidValidity() == num->data) {
+            // this is a harmless and useless message
+            return resp->tag.isEmpty();
+        } else {
+            // On the other hand, this a serious condition -- the server is telling us that the UIDVALIDITY has changed while
+            // a mailbox is open. There isn't much we could do here; having code for handling this gracefuly is just too much
+            // work for little to no benefit.
+            // The sane thing is to disconnect from this mailbox.
+            EMIT_LATER(model, imapError, Q_ARG(QString, tr("The UIDVALIDITY has changed while mailbox is open. Please reconnect.")));
+            model->setNetworkPolicy(NETWORK_OFFLINE);
+            return resp->tag.isEmpty();
+        }
     }
     default:
         // Do nothing here
@@ -792,14 +929,23 @@ bool KeepMailboxOpenTask::handleResponseCodeInsideState(const Imap::Responses::S
     return false;
 }
 
-void KeepMailboxOpenTask::slotConnFailed()
+void KeepMailboxOpenTask::slotUnselected()
 {
-    if (model->accessParser(parser).maintainingTask == this)
-        model->accessParser(parser).maintainingTask = 0;
-
-    isRunning = true;
+    switch (model->accessParser(parser).connState) {
+    case CONN_STATE_SYNCING:
+    case CONN_STATE_SELECTED:
+    case CONN_STATE_FETCHING_PART:
+    case CONN_STATE_FETCHING_MSG_METADATA:
+        model->changeConnectionState(parser, CONN_STATE_AUTHENTICATED);
+        break;
+    default:
+        // no need to do anything from here
+        break;
+    }
+    detachFromMailbox();
+    isRunning = Running::RUNNING; // WTF?
     shouldExit = true;
-    _failed("Connection failed");
+    _failed(tr("UNSELECTed"));
 }
 
 bool KeepMailboxOpenTask::dieIfInvalidMailbox()
@@ -807,10 +953,15 @@ bool KeepMailboxOpenTask::dieIfInvalidMailbox()
     if (mailboxIndex.isValid())
         return false;
 
+    if (m_deleteCurrentMailboxTask) {
+        // The current mailbox was supposed to be deleted; don't try to UNSELECT from this context
+        return true;
+    }
+
     // See ObtainSynchronizedMailboxTask::dieIfInvalidMailbox() for details
-    if (!unSelectTask && isRunning) {
+    if (!unSelectTask && isRunning == Running::RUNNING) {
         unSelectTask = model->m_taskFactory->createUnSelectTask(model, this);
-        connect(unSelectTask, SIGNAL(completed(Imap::Mailbox::ImapTask *)), this, SLOT(slotConnFailed()));
+        connect(unSelectTask, &ImapTask::completed, this, &KeepMailboxOpenTask::slotUnselected);
         unSelectTask->perform();
     }
 
@@ -875,6 +1026,108 @@ It's an error to call this on a task which we aren't tracking already.
 void KeepMailboxOpenTask::feelFreeToAbortCaller(ImapTask *task)
 {
     abortableTasks.append(task);
+}
+
+/** @short It's time to reset the counters and perform the sync */
+void KeepMailboxOpenTask::syncingTimeout()
+{
+    if (!mailboxIndex.isValid()) {
+        return;
+    }
+    if (m_skippedStateSynces == 0) {
+        // This means that state syncing it not being throttled, i.e. we're just resetting the window
+        // which determines the rate of requests which would normally trigger saving
+        m_performedStateSynces = 0;
+    } else {
+        // there's been no fresh arrivals for our timeout period -> let's flush the pending events
+        TreeItemMailbox *mailbox = Model::mailboxForSomeItem(mailboxIndex);
+        Q_ASSERT(mailbox);
+        saveSyncStateIfPossible(mailbox);
+    }
+}
+
+void KeepMailboxOpenTask::saveSyncStateNowOrLater(Imap::Mailbox::TreeItemMailbox *mailbox)
+{
+    bool saveImmediately = true;
+
+    /** @short After processing so many responses immediately, switch to a delayed mode where the saving is deferred */
+    const uint throttlingThreshold = 100;
+
+    /** @short Flush the queue after postponing this number of messages.
+
+    It's "ridiculously high", but it's still a number so that our integer newer wraps.
+    */
+    const uint maxDelayedResponses = 10000;
+
+    if (m_skippedStateSynces > 0) {
+        // we're actively throttling
+        if (m_skippedStateSynces >= maxDelayedResponses) {
+            // ...but we've been throttling too many responses, let's flush them now
+            Q_ASSERT(m_syncingTimer->isActive());
+            // do not go back to 0, otherwise there will be a lot of immediate events within each interval
+            m_performedStateSynces = throttlingThreshold;
+            saveImmediately = true;
+        } else {
+            ++m_skippedStateSynces;
+            saveImmediately = false;
+        }
+    } else {
+        // no throttling, cool
+        if (m_performedStateSynces >= throttlingThreshold) {
+            // ...but we should start throttling now
+            ++m_skippedStateSynces;
+            saveImmediately = false;
+        } else {
+            ++m_performedStateSynces;
+            if (!m_syncingTimer->isActive()) {
+                // reset the sliding window
+                m_syncingTimer->start();
+            }
+            saveImmediately = true;
+        }
+    }
+
+    if (saveImmediately) {
+        saveSyncStateIfPossible(mailbox);
+    } else {
+        m_performedStateSynces = 0;
+        m_syncingTimer->start();
+    }
+}
+
+void KeepMailboxOpenTask::saveSyncStateIfPossible(TreeItemMailbox *mailbox)
+{
+    m_skippedStateSynces = 0;
+    TreeItemMsgList *list = static_cast<TreeItemMsgList*>(mailbox->m_children[0]);
+    if (list->fetched()) {
+        mailbox->saveSyncStateAndUids(model);
+    } else {
+        list->setFetchStatus(Imap::Mailbox::TreeItem::LOADING);
+    }
+}
+
+void KeepMailboxOpenTask::closeMailboxDestructively()
+{
+    tagClose = parser->close();
+}
+
+/** @short Is this task on its own keeping the connection busy?
+
+Right now, only fetching of new arrivals is being done in the context of this KeepMailboxOpenTask task.
+*/
+bool KeepMailboxOpenTask::hasItsOwnActivity() const
+{
+    return !newArrivalsFetch.isEmpty();
+}
+
+/** @short Signal the final termination of this task */
+void KeepMailboxOpenTask::finalizeTermination()
+{
+    if (!_finished) {
+        _finished = true;
+        emit completed(this);
+    }
+    CHECK_TASK_TREE;
 }
 
 }

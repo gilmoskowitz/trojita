@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -27,21 +27,8 @@
 
 class QUrl;
 
-namespace Gui
-{
-class PartWidgetFactory;
-}
-
 namespace Imap
 {
-
-namespace Mailbox
-{
-class Model;
-class TreeItem;
-class TreeItemMessage;
-class TreeItemPart;
-}
 
 namespace Network
 {
@@ -53,8 +40,11 @@ class MsgPartNetAccessManager : public QNetworkAccessManager
 public:
     explicit MsgPartNetAccessManager(QObject *parent=0);
     void setModelMessage(const QModelIndex &message);
-    static Imap::Mailbox::TreeItemPart *pathToPart(const QModelIndex &message, const QString &path);
-    static Imap::Mailbox::TreeItemPart *cidToPart(const QByteArray &cid, Mailbox::Model *model, Mailbox::TreeItem *root);
+    static QModelIndex pathToPart(const QModelIndex &message, const QByteArray &path);
+    static QModelIndex cidToPart(const QModelIndex &rootIndex, const QByteArray &cid);
+    QString translateToSupportedMimeType(const QString &originalMimeType) const;
+    void registerMimeTypeTranslation(const QString &originalMimeType, const QString &translatedMimeType);
+    Q_INVOKABLE void wrapQmlWebViewRequest(QObject *request, QObject *reply);
 protected:
     virtual QNetworkReply *createRequest(Operation op, const QNetworkRequest &req, QIODevice *outgoingData=0);
 signals:
@@ -62,10 +52,10 @@ signals:
 public slots:
     void setExternalsEnabled(bool enabled);
 private:
-    friend class Gui::PartWidgetFactory;
     QPersistentModelIndex message;
 
     bool externalsEnabled;
+    QMap<QString, QString> m_mimeTypeFixups;
 
     MsgPartNetAccessManager(const MsgPartNetAccessManager &); // don't implement
     MsgPartNetAccessManager &operator=(const MsgPartNetAccessManager &); // don't implement

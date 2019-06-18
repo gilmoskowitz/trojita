@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,12 @@
 
 
 #include "DeleteMailboxTask.h"
+#include "Common/InvokeMethod.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "GetAnyConnectionTask.h"
-#include "ItemRoles.h"
-#include "Model.h"
-#include "MailboxTree.h"
+#include "KeepMailboxOpenTask.h"
 
 namespace Imap
 {
@@ -34,9 +36,25 @@ namespace Mailbox
 
 
 DeleteMailboxTask::DeleteMailboxTask(Model *model, const QString &mailbox):
-    ImapTask(model), mailbox(mailbox)
+    ImapTask(model), conn(0), mailbox(mailbox)
 {
-    conn = model->m_taskFactory->createGetAnyConnectionTask(model);
+    // If the mailbox we're about to delete is open, or scheduled to be open, let's make
+    // sure that we are going to tell the KeepMailboxOpenTask about us.
+    // The mailbox discovery is lazy; we most definitely do *not* want to trigger an explicit
+    // resynchronization just for that mailbox we're going to immediately delete. That's why
+    // we are *not* calling Model::findTaskResponsibleFor here.
+    if (TreeItemMailbox *mailboxPtr = model->findMailboxByName(mailbox)) {
+        if (mailboxPtr->maintainingTask) {
+            conn = mailboxPtr->maintainingTask;
+        }
+    }
+
+    if (!conn) {
+        // Either the mailbox is not known or converted to an index,
+        // or there's no task associated with the mailbox
+        conn = model->m_taskFactory->createGetAnyConnectionTask(model);
+    }
+
     conn->addDependentTask(this);
 }
 
@@ -63,22 +81,22 @@ bool DeleteMailboxTask::handleStateHelper(const Imap::Responses::State *const re
                 TreeItem *parentPtr = mailboxPtr->parent();
                 QModelIndex parentIndex = parentPtr == model->m_mailboxes ? QModelIndex() : parentPtr->toIndex(model);
                 model->beginRemoveRows(parentIndex, mailboxPtr->row(), mailboxPtr->row());
-                mailboxPtr->parent()->m_children.removeAt(mailboxPtr->row());
+                mailboxPtr->parent()->m_children.erase(mailboxPtr->parent()->m_children.begin() + mailboxPtr->row());
                 model->endRemoveRows();
                 delete mailboxPtr;
             } else {
                 QString buf;
                 QDebug dbg(&buf);
-                dbg << "The IMAP server just told us that it succeded to delete mailbox named" <<
+                dbg << "The IMAP server just told us that it succeeded to delete mailbox named" <<
                     mailbox << ", yet we don't know of any such mailbox. Message from the server:" <<
                     resp->message;
                 log(buf);
             }
-            emit model->mailboxDeletionSucceded(mailbox);
+            EMIT_LATER(model, mailboxDeletionSucceded, Q_ARG(QString, mailbox));
             _completed();
         } else {
-            emit model->mailboxDeletionFailed(mailbox, resp->message);
-            _failed("Couldn't delete mailbox");
+            EMIT_LATER(model, mailboxDeletionFailed, Q_ARG(QString, mailbox), Q_ARG(QString, resp->message));
+            _failed(tr("Couldn't delete mailbox"));
         }
         return true;
     } else {
@@ -89,6 +107,13 @@ bool DeleteMailboxTask::handleStateHelper(const Imap::Responses::State *const re
 QVariant DeleteMailboxTask::taskData(const int role) const
 {
     return role == RoleTaskCompactName ? QVariant(tr("Deleting mailbox")) : QVariant();
+}
+
+void DeleteMailboxTask::mailboxHasPendingActions()
+{
+    EMIT_LATER(model, mailboxDeletionFailed, Q_ARG(QString, mailbox),
+               Q_ARG(QString, tr("Mailbox %1 has pending activity, so it cannot be deleted now.").arg(mailbox)));
+    _failed(tr("Mailbox has pending activity"));
 }
 
 }

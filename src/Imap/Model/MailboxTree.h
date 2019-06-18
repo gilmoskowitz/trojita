@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -23,6 +23,7 @@
 #ifndef IMAP_MAILBOXTREE_H
 #define IMAP_MAILBOXTREE_H
 
+#include <memory>
 #include <QList>
 #include <QModelIndex>
 #include <QPointer>
@@ -40,6 +41,7 @@ namespace Mailbox
 class Model;
 class MailboxModel;
 class KeepMailboxOpenTask;
+class ListChildMailboxesTask;
 
 class TreeItem
 {
@@ -49,8 +51,10 @@ class TreeItem
     friend class DeleteMailboxTask; // for direct access to m_children
     friend class ObtainSynchronizedMailboxTask;
     friend class KeepMailboxOpenTask; // for direct access to m_children
+    friend class ListChildMailboxesTask; // setStatus() in case of failure
     friend class MsgListModel; // for direct access to m_children
     friend class ThreadingMsgListModel; // for direct access to m_children
+    friend class UpdateFlagsOfAllMessagesTask; // for direct access to m_children
 
 protected:
     /** @short Availability of an item */
@@ -75,33 +79,51 @@ public:
         /** @short The MIME fetch modifier for individual message parts
 
           In constrast to OFFSET_HEADER and OFFSET_TEXT, this one applies
-          only to TreeItemPart, simply because using the MIME modiifer on
+          only to TreeItemPart, simply because using the MIME modifier on
           a top-level message is not allowed as per RFC 3501.
         */
-        OFFSET_MIME=3
+        OFFSET_MIME=3,
+        /** @short Obtain the raw data without any kind of Content-Transfer-Encoding decoding */
+        OFFSET_RAW_CONTENTS = 4
     } PartModifier;
 
 protected:
-    TreeItem *m_parent;
-    QList<TreeItem *> m_children;
-    FetchingState m_fetchStatus;
+    static const intptr_t TagMask = 0x3;
+    static const intptr_t PointerMask = ~TagMask;
+    union {
+        TreeItem *m_parent;
+        intptr_t m_parentAsBits;
+    };
+    TreeItemChildrenList m_children;
+
+    FetchingState accessFetchStatus() const
+    {
+        return static_cast<FetchingState>(m_parentAsBits & TagMask);
+    }
+    void setFetchStatus(const FetchingState fetchStatus)
+    {
+        m_parentAsBits = reinterpret_cast<intptr_t>(parent()) | fetchStatus;
+    }
 public:
     explicit TreeItem(TreeItem *parent);
-    TreeItem *parent() const { return m_parent; }
+    TreeItem *parent() const
+    {
+        return reinterpret_cast<TreeItem *>(m_parentAsBits & PointerMask);
+    }
     virtual int row() const;
 
     virtual ~TreeItem();
     virtual unsigned int childrenCount(Model *const model);
     virtual TreeItem *child(const int offset, Model *const model);
-    virtual QList<TreeItem *> setChildren(const QList<TreeItem *> items);
+    virtual TreeItemChildrenList setChildren(const TreeItemChildrenList &items);
     virtual void fetch(Model *const model) = 0;
     virtual unsigned int rowCount(Model *const model) = 0;
     virtual unsigned int columnCount();
     virtual QVariant data(Model *const model, int role) = 0;
     virtual bool hasChildren(Model *const model) = 0;
-    virtual bool fetched() const { return m_fetchStatus == DONE; }
-    virtual bool loading() const { return m_fetchStatus == LOADING; }
-    virtual bool isUnavailable(Model *const model) const;
+    virtual bool fetched() const { return accessFetchStatus() == DONE; }
+    virtual bool loading() const { return accessFetchStatus() == LOADING; }
+    virtual bool isUnavailable() const;
     virtual TreeItem *specialColumnPtr(int row, int column) const;
     virtual QModelIndex toIndex(Model *const model) const;
 };
@@ -115,6 +137,7 @@ class TreeItemMailbox: public TreeItem
     MailboxMetadata m_metadata;
     friend class Model; // needs access to maintianingTask
     friend class MailboxModel;
+    friend class DeleteMailboxTask; // for direct access to maintainingTask
     friend class KeepMailboxOpenTask; // needs access to maintainingTask
     friend class SubscribeUnsubscribeTask; // needs access to m_metadata.flags
     static QLatin1String flagNoInferiors;
@@ -127,7 +150,7 @@ public:
 
     static TreeItemMailbox *fromMetadata(TreeItem *parent, const MailboxMetadata &metadata);
 
-    virtual QList<TreeItem *> setChildren(const QList<TreeItem *> items);
+    virtual TreeItemChildrenList setChildren(const TreeItemChildrenList &items);
     virtual void fetch(Model *const model);
     virtual void fetchWithCacheControl(Model *const model, bool forceReload);
     virtual unsigned int rowCount(Model *const model);
@@ -146,7 +169,7 @@ public:
 
     No network activity will be caused. If the answer is not known for sure, we return false (meaning "don't know").
     */
-    bool hasNoChildMaliboxesAlreadyKnown();
+    bool hasNoChildMailboxesAlreadyKnown();
 
     QString mailbox() const { return m_metadata.mailbox; }
     QString separator() const { return m_metadata.separator; }
@@ -160,15 +183,17 @@ public:
                              const Responses::Fetch &response,
                              QList<TreeItemPart *> &changedParts,
                              TreeItemMessage *&changedMessage,
-                             bool canSaveSyncStateDirectly,
                              bool usingQresync);
     void rescanForChildMailboxes(Model *const model);
     void handleExpunge(Model *const model, const Responses::NumberResponse &resp);
     void handleExists(Model *const model, const Responses::NumberResponse &resp);
     void handleVanished(Model *const model, const Responses::Vanished &resp);
     bool isSelectable() const;
+
+    void saveSyncStateAndUids(Model *model);
+
 private:
-    TreeItemPart *partIdToPtr(Model *model, TreeItemMessage *message, const QString &msgId);
+    TreeItemPart *partIdToPtr(Model *model, TreeItemMessage *message, const QByteArray &msgId);
 
     /** @short ImapTask which is currently responsible for well-being of this mailbox */
     QPointer<KeepMailboxOpenTask> maintainingTask;
@@ -199,8 +224,62 @@ public:
     int recentMessageCount(Model *const model);
     void fetchNumbers(Model *const model);
     void recalcVariousMessageCounts(Model *model);
+    void recalcVariousMessageCountsOnExpunge(Model *model, TreeItemMessage *expungedMessage);
     void resetWasUnreadState();
     bool numbersFetched() const;
+};
+
+class MessageDataPayload
+{
+public:
+    MessageDataPayload();
+
+    const Message::Envelope &envelope() const;
+    void setEnvelope(const Message::Envelope &envelope);
+    const QDateTime &internalDate() const;
+    void setInternalDate(const QDateTime &internalDate);
+    quint64 size() const;
+    void setSize(const quint64 size);
+    const QList<QByteArray> &hdrReferences() const;
+    void setHdrReferences(const QList<QByteArray> &hdrReferences);
+    const QList<QUrl> &hdrListPost() const;
+    void setHdrListPost(const QList<QUrl> &hdrListPost);
+    bool hdrListPostNo() const;
+    void setHdrListPostNo(const bool hdrListPostNo);
+    const QByteArray &rememberedBodyStructure() const;
+    void setRememberedBodyStructure(const QByteArray &blob);
+
+    TreeItemPart *partHeader() const;
+    void setPartHeader(std::unique_ptr<TreeItemPart> part);
+    TreeItemPart *partText() const;
+    void setPartText(std::unique_ptr<TreeItemPart> part);
+
+    bool isComplete() const;
+
+    bool gotEnvelope() const;
+    bool gotInternalDate() const;
+    bool gotSize() const;
+    bool gotHdrReferences() const;
+    bool gotHdrListPost() const;
+    bool gotRemeberedBodyStructure() const;
+
+private:
+    Message::Envelope m_envelope;
+    QDateTime m_internalDate;
+    quint64 m_size;
+    QList<QByteArray> m_hdrReferences;
+    QList<QUrl> m_hdrListPost;
+    QByteArray m_rememberedBodyStructure;
+    bool m_hdrListPostNo;
+    std::unique_ptr<TreeItemPart> m_partHeader;
+    std::unique_ptr<TreeItemPart> m_partText;
+
+    bool m_gotEnvelope : 1;
+    bool m_gotInternalDate : 1;
+    bool m_gotSize : 1;
+    bool m_gotBodystructure : 1;
+    bool m_gotHdrReferences : 1;
+    bool m_gotHdrListPost : 1;
 };
 
 class TreeItemMessage: public TreeItem
@@ -212,23 +291,23 @@ class TreeItemMessage: public TreeItem
     friend class ObtainSynchronizedMailboxTask; // needs access to m_offset
     friend class KeepMailboxOpenTask; // needs access to m_offset
     friend class UpdateFlagsTask; // needs access to m_flags
-    Message::Envelope m_envelope;
-    QDateTime m_internalDate;
-    uint m_size;
-    uint m_uid;
-    QStringList m_flags;
-    QList<QByteArray> m_hdrReferences;
-    QList<QUrl> m_hdrListPost;
-    bool m_hdrListPostNo;
-    bool m_flagsHandled;
+    friend class UpdateFlagsOfAllMessagesTask; // needs access to m_flags
     int m_offset;
+    uint m_uid;
+    mutable MessageDataPayload *m_data;
+    QStringList m_flags;
+    bool m_flagsHandled;
     bool m_wasUnread;
-    // These are lazily-populated from a const method, so they got to be mutable
-    mutable TreeItemPart *m_partHeader;
-    mutable TreeItemPart *m_partText;
     /** @short Set FLAGS and maintain the unread message counter */
-    void setFlags(TreeItemMsgList *list, const QStringList &flags, bool forceChange);
+    void setFlags(TreeItemMsgList *list, const QStringList &flags);
     void processAdditionalHeaders(Model *model, const QByteArray &rawHeaders);
+    static bool hasNestedAttachments(Model *const model, TreeItemPart *part);
+
+    MessageDataPayload *data() const
+    {
+        return m_data ? m_data : (m_data = new MessageDataPayload());
+    }
+
 public:
     explicit TreeItemMessage(TreeItem *parent);
     ~TreeItemMessage();
@@ -239,16 +318,24 @@ public:
     virtual unsigned int columnCount();
     virtual QVariant data(Model *const model, int role);
     virtual bool hasChildren(Model *const model) { Q_UNUSED(model); return true; }
+    virtual TreeItemChildrenList setChildren(const TreeItemChildrenList &items);
     Message::Envelope envelope(Model *const model);
     QDateTime internalDate(Model *const model);
-    uint size(Model *const model);
+    quint64 size(Model *const model);
     bool isMarkedAsDeleted() const;
     bool isMarkedAsRead() const;
     bool isMarkedAsReplied() const;
     bool isMarkedAsForwarded() const;
     bool isMarkedAsRecent() const;
+    bool isMarkedAsFlagged() const;
+    bool isMarkedAsJunk() const;
+    bool isMarkedAsNotJunk() const;
+    void checkFlagsReadRecent(bool &isRead, bool &isRecent) const;
     uint uid() const;
     virtual TreeItem *specialColumnPtr(int row, int column) const;
+    bool hasAttachments(Model *const model);
+
+    static QVariantList addresListToQVariant(const QList<Imap::Message::MailAddress> &addressList);
 };
 
 class TreeItemPart: public TreeItem
@@ -256,26 +343,27 @@ class TreeItemPart: public TreeItem
     void operator=(const TreeItem &);  // don't implement
     friend class TreeItemMailbox; // needs access to m_data
     friend class Model; // dtto
-    QString m_mimeType;
-    QString m_charset;
-    QString m_contentFormat;
+    QByteArray m_mimeType;
+    QByteArray m_charset;
+    QByteArray m_contentFormat;
+    QByteArray m_delSp;
     QByteArray m_encoding;
     QByteArray m_data;
     QByteArray m_bodyFldId;
     QByteArray m_bodyDisposition;
     QString m_fileName;
-    uint m_octets;
+    quint64 m_octets;
     QByteArray m_multipartRelatedStartPart;
-    TreeItemPart *m_partHeader;
-    TreeItemPart *m_partText;
-    TreeItemPart *m_partMime;
+    Imap::Message::AbstractMessage::bodyFldParam_t m_bodyFldParam;
+    mutable TreeItemPart *m_partMime;
+    mutable TreeItemPart *m_partRaw;
 public:
-    TreeItemPart(TreeItem *parent, const QString &mimeType);
+    TreeItemPart(TreeItem *parent, const QByteArray &mimeType);
     ~TreeItemPart();
 
     virtual unsigned int childrenCount(Model *const model);
     virtual TreeItem *child(const int offset, Model *const model);
-    virtual QList<TreeItem *> setChildren(const QList<TreeItem *> items);
+    virtual TreeItemChildrenList setChildren(const TreeItemChildrenList &items);
 
     virtual void fetchFromCache(Model *const model);
     virtual void fetch(Model *const model);
@@ -284,7 +372,7 @@ public:
     virtual QVariant data(Model *const model, int role);
     virtual bool hasChildren(Model *const model);
 
-    virtual QString partId() const;
+    virtual QByteArray partId() const;
 
     /** @short Shall we use RFC3516 BINARY for fetching message parts or not */
     typedef enum {
@@ -294,8 +382,8 @@ public:
         FETCH_PART_BINARY
     } PartFetchingMode;
 
-    virtual QString partIdForFetch(const PartFetchingMode fetchingMode) const;
-    virtual QString pathToPart() const;
+    virtual QByteArray partIdForFetch(const PartFetchingMode fetchingMode) const;
+    virtual QByteArray pathToPart() const;
     TreeItemMessage *message() const;
 
     /** @short Provide access to the internal buffer holding data
@@ -306,11 +394,11 @@ public:
         Imap::Network::MsgPartNetworkReply.
      */
     QByteArray *dataPtr();
-    QString mimeType() const { return m_mimeType; }
-    QString charset() const { return m_charset; }
-    void setCharset(const QString &ch) { m_charset = ch; }
-    QString contentFormat() const { return m_contentFormat; }
-    void setContentFormat(const QString &format) { m_contentFormat = format; }
+    QByteArray mimeType() const { return m_mimeType; }
+    QByteArray charset() const { return m_charset; }
+    void setCharset(const QByteArray &ch) { m_charset = ch; }
+    void setContentFormat(const QByteArray &format) { m_contentFormat = format; }
+    void setContentDelSp(const QByteArray &delSp) { m_delSp = delSp; }
     void setEncoding(const QByteArray &encoding) { m_encoding = encoding; }
     QByteArray encoding() const { return m_encoding; }
     void setBodyFldId(const QByteArray &id) { m_bodyFldId = id; }
@@ -319,16 +407,18 @@ public:
     QByteArray bodyDisposition() const { return m_bodyDisposition; }
     void setFileName(const QString &name) { m_fileName = name; }
     QString fileName() const { return m_fileName; }
-    void setOctets(const uint size) { m_octets = size; }
+    void setOctets(const quint64 size) { m_octets = size; }
     /** @short Return the downloadable size of the message part */
-    uint octets() const { return m_octets; }
+    quint64 octets() const { return m_octets; }
     QByteArray multipartRelatedStartPart() const { return m_multipartRelatedStartPart; }
     void setMultipartRelatedStartPart(const QByteArray &start) { m_multipartRelatedStartPart = start; }
+    void setBodyFldParam(const Imap::Message::AbstractMessage::bodyFldParam_t &bodyFldParam) { m_bodyFldParam = bodyFldParam; }
+    Imap::Message::AbstractMessage::bodyFldParam_t bodyFldParam() const { return m_bodyFldParam; }
     virtual TreeItem *specialColumnPtr(int row, int column) const;
-
-    void silentlyReleaseMemoryRecursive();
-protected:
     virtual bool isTopLevelMultiPart() const;
+
+    virtual void silentlyReleaseMemoryRecursive();
+protected:
     TreeItemPart(TreeItem *parent);
 };
 
@@ -343,20 +433,36 @@ public:
     TreeItemModifiedPart(TreeItem *parent, const PartModifier kind);
     virtual int row() const;
     virtual unsigned int columnCount();
-    virtual QString partId() const;
-    virtual QString pathToPart() const;
+    virtual QByteArray partId() const;
+    virtual QByteArray pathToPart() const;
     virtual TreeItem *specialColumnPtr(int row, int column) const;
     PartModifier kind() const;
     virtual QModelIndex toIndex(Model *const model) const;
-    virtual QString partIdForFetch(const PartFetchingMode fetchingMode) const;
+    virtual QByteArray partIdForFetch(const PartFetchingMode fetchingMode) const;
 protected:
     virtual bool isTopLevelMultiPart() const;
 private:
-    QString modifierToString() const;
+    QByteArray modifierToByteArray() const;
+};
+
+/** @short Specialization of TreeItemPart for parts holding a multipart/message */
+class TreeItemPartMultipartMessage: public TreeItemPart
+{
+    Message::Envelope m_envelope;
+    mutable TreeItemPart *m_partHeader;
+    mutable TreeItemPart *m_partText;
+public:
+    TreeItemPartMultipartMessage(TreeItem *parent, const Message::Envelope &envelope);
+    virtual ~TreeItemPartMultipartMessage();
+    virtual QVariant data(Model * const model, int role);
+    virtual TreeItem *specialColumnPtr(int row, int column) const;
+    virtual void silentlyReleaseMemoryRecursive();
 };
 
 }
 
 }
+
+Q_DECLARE_METATYPE(QByteArray*)
 
 #endif // IMAP_MAILBOXTREE_H

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -21,11 +21,11 @@
 */
 #include "PrettyMsgListModel.h"
 #include <QFont>
-#include "Gui/IconLoader.h"
 #include "ItemRoles.h"
 #include "MsgListModel.h"
 #include "ThreadingMsgListModel.h"
-#include "Utils.h"
+#include "UiUtils/Formatting.h"
+#include "UiUtils/IconLoader.h"
 
 
 namespace Imap
@@ -78,9 +78,11 @@ QVariant PrettyMsgListModel::data(const QModelIndex &index, int role) const
                 break;
             }
             QVariantList items = translated.data(backendRole).toList();
-            return Imap::Message::MailAddress::prettyList(items, role == Qt::DisplayRole ?
-                    Imap::Message::MailAddress::FORMAT_JUST_NAME :
-                    Imap::Message::MailAddress::FORMAT_READABLE);
+            if (role == Qt::DisplayRole) {
+                return Imap::Message::MailAddress::prettyList(items, Imap::Message::MailAddress::FORMAT_JUST_NAME);
+            } else {
+                return UiUtils::Formatting::htmlEscaped(Imap::Message::MailAddress::prettyList(items, Imap::Message::MailAddress::FORMAT_READABLE));
+            }
         }
         case MsgListModel::DATE:
         case MsgListModel::RECEIVED_DATE:
@@ -90,7 +92,7 @@ QVariant PrettyMsgListModel::data(const QModelIndex &index, int role) const
                 // tooltips shall always show the full and complete data
                 return res.toLocalTime().toString(Qt::DefaultLocaleLongDate);
             }
-            return prettyFormatDate(res.toLocalTime());
+            return UiUtils::Formatting::prettyDate(res.toLocalTime());
         }
         case MsgListModel::SIZE:
         {
@@ -98,10 +100,18 @@ QVariant PrettyMsgListModel::data(const QModelIndex &index, int role) const
             if (!size.isValid()) {
                 return QVariant();
             }
-            return PrettySize::prettySize(size.toUInt());
+            return UiUtils::Formatting::prettySize(size.toULongLong());
         }
         case MsgListModel::SUBJECT:
-            return translated.data(RoleIsFetched).toBool() ? translated.data(RoleMessageSubject) : tr("Loading...");
+        {
+            if (!translated.data(RoleIsFetched).toBool())
+                return tr("Loading...");
+            QString subject = translated.data(RoleMessageSubject).toString();
+            if (role == Qt::ToolTipRole) {
+                subject = UiUtils::Formatting::htmlEscaped(subject);
+            }
+            return subject.isEmpty() ? tr("(no subject)") : subject;
+        }
         }
         break;
 
@@ -127,26 +137,35 @@ QVariant PrettyMsgListModel::data(const QModelIndex &index, int role) const
             bool isForwarded = translated.data(RoleMessageIsMarkedForwarded).toBool();
             bool isReplied = translated.data(RoleMessageIsMarkedReplied).toBool();
 
-            if (translated.data(RoleMessageIsMarkedDeleted).toBool())
-                return Gui::loadIcon(QLatin1String("mail-deleted"));
-            else if (isForwarded && isReplied)
-                return Gui::loadIcon(QLatin1String("mail-replied-forw"));
+            if (isForwarded && isReplied)
+                return UiUtils::loadIcon(QStringLiteral("mail-forwarded-replied"));
             else if (isReplied)
-                return Gui::loadIcon(QLatin1String("mail-replied"));
+                return UiUtils::loadIcon(QStringLiteral("mail-replied"));
             else if (isForwarded)
-                return Gui::loadIcon(QLatin1String("mail-forwarded"));
+                return UiUtils::loadIcon(QStringLiteral("mail-forwarded"));
             else if (translated.data(RoleMessageIsMarkedRecent).toBool())
-                return Gui::loadIcon(QLatin1String("mail-recent"));
+                return UiUtils::loadIcon(QStringLiteral("mail-mark-unread-new"));
+            else if (!translated.data(RoleMessageIsMarkedRead).toBool())
+                return UiUtils::loadIcon(QStringLiteral("mail-mark-unread"));
             else
-                return QIcon(QLatin1String(":/icons/transparent.png"));
+                return UiUtils::loadIcon(QStringLiteral("mail-mark-read"));
         }
         case MsgListModel::SEEN:
             if (! translated.data(RoleIsFetched).toBool())
                 return QVariant();
-            if (! translated.data(RoleMessageIsMarkedRead).toBool())
-                return QIcon(QLatin1String(":/icons/mail-unread.png"));
+            break;
+        case MsgListModel::FLAGGED:
+            if (! translated.data(RoleIsFetched).toBool())
+                return QVariant();
+            if (translated.data(RoleMessageIsMarkedFlagged).toBool())
+                return UiUtils::loadIcon(QStringLiteral("mail-flagged"));
             else
-                return QIcon(QLatin1String(":/icons/mail-read.png"));
+                return UiUtils::loadIcon(QStringLiteral("mail-unflagged"));
+        case MsgListModel::ATTACHMENT:
+            if (translated.data(RoleMessageHasAttachments).toBool())
+                return UiUtils::loadIcon(QStringLiteral("mail-attachment"));
+            else
+                return QVariant();
         default:
             return QVariant();
         }
@@ -173,35 +192,15 @@ QVariant PrettyMsgListModel::data(const QModelIndex &index, int role) const
             font.setUnderline(true);
         }
 
+        if (index.column() == MsgListModel::SUBJECT && translated.data(RoleMessageSubject).toString().isEmpty()) {
+            font.setItalic(true);
+        }
+
         return font;
     }
     }
 
     return QSortFilterProxyModel::data(index, role);
-}
-
-/** @short Format a QDateTime for compact display in one column of the view */
-QString PrettyMsgListModel::prettyFormatDate(const QDateTime &dateTime) const
-{
-    // The time is not always synced properly, so better accept even slightly too new messages as "from today"
-    QDateTime now = QDateTime::currentDateTime().addSecs(15*60);
-    if (dateTime >= now) {
-        // Messages from future shall always be shown using full format to prevent nasty surprises.
-        return dateTime.toString(Qt::DefaultLocaleShortDate);
-    } else if (dateTime > now.addDays(-1)) {
-        // It's a message fresher than 24 hours, let's show just the time.
-        // While we're at it, cut the seconds, these are not terribly useful here
-        return dateTime.time().toString(tr("hh:mm"));
-    } else if (dateTime > now.addDays(-7)) {
-        // Messages from the last seven days can be formatted just with the weekday name
-        return dateTime.toString(tr("ddd hh:mm"));
-    } else if (dateTime > now.addYears(-1)) {
-        // Messages newer than one year don't have to show year
-        return dateTime.toString(tr("d MMM hh:mm"));
-    } else {
-        // Old messagees shall have a full date
-        return dateTime.toString(Qt::DefaultLocaleShortDate);
-    }
 }
 
 void PrettyMsgListModel::setHideRead(bool value)
@@ -233,6 +232,8 @@ void PrettyMsgListModel::sort(int column, Qt::SortOrder order)
     ThreadingMsgListModel::SortCriterium criterium = ThreadingMsgListModel::SORT_NONE;
     switch (column) {
     case MsgListModel::SEEN:
+    case MsgListModel::FLAGGED:
+    case MsgListModel::ATTACHMENT:
     case MsgListModel::COLUMN_COUNT:
     case MsgListModel::BCC:
     case -1:

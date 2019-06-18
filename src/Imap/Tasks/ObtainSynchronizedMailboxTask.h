@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -54,6 +54,7 @@ public:
     virtual bool handleESearch(const Imap::Responses::ESearch *const resp);
     virtual bool handleFetch(const Imap::Responses::Fetch *const resp);
     virtual bool handleVanished(const Imap::Responses::Vanished *const resp);
+    virtual bool handleEnabled(const Responses::Enabled * const resp);
 
     typedef enum { UID_SYNC_ALL, UID_SYNC_ONLY_NEW } UidSyncingMode;
 
@@ -75,7 +76,6 @@ private:
 
     void syncUids(TreeItemMailbox *mailbox, const uint lowestUidToQuery=0);
     void syncFlags(TreeItemMailbox *mailbox);
-    void saveSyncState(TreeItemMailbox *mailbox);
     void updateHighestKnownUid(TreeItemMailbox *mailbox, const TreeItemMsgList *list) const;
 
     void notifyInterestingMessages(TreeItemMailbox *mailbox);
@@ -98,6 +98,8 @@ private slots:
     /** @short We're now out of that mailbox, hurray! */
     void slotUnSelectCompleted();
 
+    void signalSyncFailure(const QString &message);
+
 private:
     ImapTask *conn;
     QPersistentModelIndex mailboxIndex;
@@ -107,7 +109,7 @@ private:
     QList<CommandHandle> newArrivalsFetch;
     Imap::Mailbox::MailboxSyncingProgress status;
     UidSyncingMode uidSyncingMode;
-    QList<uint> uidMap;
+    Imap::Uids uidMap;
     uint firstUnknownUidOffset;
     SyncState oldSyncState;
     bool m_usingQresync;

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,7 +24,9 @@
 
 #include <QFile>
 #include <QPersistentModelIndex>
+#include <QPointer>
 #include <QNetworkReply>
+#include "Imap/Model/FullMessageCombiner.h"
 #include "Imap/Network/MsgPartNetAccessManager.h"
 
 namespace Imap
@@ -43,24 +45,30 @@ class FileDownloadManager : public QObject
     Q_OBJECT
 public:
     FileDownloadManager(QObject *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &partIndex);
+    FileDownloadManager(QObject *parent, Imap::Network::MsgPartNetAccessManager *manager, const QUrl &url, const QModelIndex &relativeRoot);
     static QString toRealFileName(const QModelIndex &index);
-    QVariant data(int role) const;
 private slots:
-    void slotDataTransfered();
-    void slotTransferError();
-    void slotDeleteReply(QNetworkReply *reply);
+    void onPartDataTransfered();
+    void onReplyTransferError();
+    void onCombinerTransferError(const QString &message);
+    void deleteReply(QNetworkReply *reply);
 public slots:
-    void slotDownloadNow();
+    void downloadPart();
+    void downloadMessage();
+    void onMessageDataTransferred();
 signals:
     void transferError(const QString &errorMessage);
     void fileNameRequested(QString *fileName);
     void succeeded();
+    void cancelled();
 private:
     Imap::Network::MsgPartNetAccessManager *manager;
     QPersistentModelIndex partIndex;
     QNetworkReply *reply;
     QFile saving;
     bool saved;
+    QPointer<Imap::Mailbox::FullMessageCombiner> m_combiner;
+    QString m_errorMessage;
 
     FileDownloadManager(const FileDownloadManager &); // don't implement
     FileDownloadManager &operator=(const FileDownloadManager &); // don't implement

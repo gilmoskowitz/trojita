@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -31,14 +31,8 @@ namespace Imap
 namespace Mailbox
 {
 
-MemoryCache::MemoryCache(QObject *parent, const QString &fileName): AbstractCache(parent), fileName(fileName)
+MemoryCache::MemoryCache(QObject *parent): AbstractCache(parent)
 {
-    loadData();
-}
-
-MemoryCache::~MemoryCache()
-{
-    saveData();
 }
 
 QList<MailboxMetadata> MemoryCache::childMailboxes(const QString &mailbox) const
@@ -56,12 +50,12 @@ void MemoryCache::setChildMailboxes(const QString &mailbox, const QList<MailboxM
 #ifdef CACHE_DEBUG
     qDebug() << "setting child mailboxes for" << mailbox << "to" << data;
 #endif
-    mailboxes[ mailbox ] = data;
+    mailboxes[mailbox] = data;
 }
 
 SyncState MemoryCache::mailboxSyncState(const QString &mailbox) const
 {
-    return syncState[ mailbox ];
+    return syncState[mailbox];
 }
 
 void MemoryCache::setMailboxSyncState(const QString &mailbox, const SyncState &state)
@@ -69,15 +63,15 @@ void MemoryCache::setMailboxSyncState(const QString &mailbox, const SyncState &s
 #ifdef CACHE_DEBUG
     qDebug() << "setting mailbox sync state of" << mailbox << "to" << state;
 #endif
-    syncState[ mailbox ] = state;
+    syncState[mailbox] = state;
 }
 
-void MemoryCache::setUidMapping(const QString &mailbox, const QList<uint> &mapping)
+void MemoryCache::setUidMapping(const QString &mailbox, const Imap::Uids &mapping)
 {
 #ifdef CACHE_DEBUG
     qDebug() << "saving UID mapping for" << mailbox << "to" << mapping;
 #endif
-    seqToUid[ mailbox ] = mapping;
+    seqToUid[mailbox] = mapping;
 }
 
 void MemoryCache::clearUidMapping(const QString &mailbox)
@@ -96,27 +90,37 @@ void MemoryCache::clearAllMessages(const QString &mailbox)
     flags.remove(mailbox);
     msgMetadata.remove(mailbox);
     parts.remove(mailbox);
+    threads.remove(mailbox);
 }
 
-void MemoryCache::clearMessage(const QString mailbox, uint uid)
+void MemoryCache::clearMessage(const QString mailbox, const uint uid)
 {
 #ifdef CACHE_DEBUG
     qDebug() << "pruging all info for message" << mailbox << uid;
 #endif
     if (flags.contains(mailbox))
-        flags[ mailbox ].remove(uid);
+        flags[mailbox].remove(uid);
     if (msgMetadata.contains(mailbox))
-        msgMetadata[ mailbox ].remove(uid);
+        msgMetadata[mailbox].remove(uid);
     if (parts.contains(mailbox))
-        parts[ mailbox ].remove(uid);
+        parts[mailbox].remove(uid);
 }
 
-void MemoryCache::setMsgPart(const QString &mailbox, uint uid, const QString &partId, const QByteArray &data)
+void MemoryCache::setMsgPart(const QString &mailbox, const uint uid, const QByteArray &partId, const QByteArray &data)
 {
 #ifdef CACHE_DEBUG
     qDebug() << "set message part" << mailbox << uid << partId << data.size();
 #endif
-    parts[ mailbox ][ uid ][ partId ] = data;
+    parts[mailbox][uid][partId] = data;
+}
+
+void MemoryCache::forgetMessagePart(const QString &mailbox, const uint uid, const QByteArray &partId)
+{
+#ifdef CACHE_DEBUG
+    qDebug() << "forget message part" << mailbox << uid << partId;
+#endif
+    parts[mailbox][uid].remove(partId);
+
 }
 
 void MemoryCache::setMsgFlags(const QString &mailbox, uint uid, const QStringList &newFlags)
@@ -127,54 +131,39 @@ void MemoryCache::setMsgFlags(const QString &mailbox, uint uid, const QStringLis
     flags[mailbox][uid] = newFlags;
 }
 
-QStringList MemoryCache::msgFlags(const QString &mailbox, uint uid) const
+QStringList MemoryCache::msgFlags(const QString &mailbox, const uint uid) const
 {
     return flags[mailbox][uid];
 }
 
-QList<uint> MemoryCache::uidMapping(const QString &mailbox) const
+Imap::Uids MemoryCache::uidMapping(const QString &mailbox) const
 {
-    return seqToUid[ mailbox ];
+    return seqToUid[mailbox];
 }
 
-void MemoryCache::setMessageMetadata(const QString &mailbox, uint uid, const MessageDataBundle &metadata)
+void MemoryCache::setMessageMetadata(const QString &mailbox, const uint uid, const MessageDataBundle &metadata)
 {
-    LightMessageDataBundle tmp;
-    tmp.envelope = metadata.envelope;
-    tmp.serializedBodyStructure = metadata.serializedBodyStructure;
-    tmp.size = metadata.size;
-    tmp.hdrReferences = metadata.hdrReferences;
-    msgMetadata[ mailbox ][ uid ] = tmp;
+    msgMetadata[mailbox][uid] = metadata;
 }
 
-MemoryCache::MessageDataBundle MemoryCache::messageMetadata(const QString &mailbox, uint uid) const
+MemoryCache::MessageDataBundle MemoryCache::messageMetadata(const QString &mailbox, const uint uid) const
 {
-    MessageDataBundle res;
-    const QMap<uint, LightMessageDataBundle> &firstLevel = msgMetadata[ mailbox ];
-    QMap<uint, LightMessageDataBundle>::const_iterator it = firstLevel.find(uid);
+    const QMap<uint, MessageDataBundle> &firstLevel = msgMetadata[ mailbox ];
+    QMap<uint, MessageDataBundle>::const_iterator it = firstLevel.find(uid);
     if (it == firstLevel.end()) {
-        res.uid = 0;
-        return res;
+        return MessageDataBundle();
     }
-    res.envelope = it->envelope;
-    res.serializedBodyStructure = it->serializedBodyStructure;
-    res.size = it->size;
-    res.internalDate = it->internalDate;
-    res.uid = uid;
-    res.hdrReferences = it->hdrReferences;
-    res.hdrListPost = it->hdrListPost;
-    res.hdrListPostNo = it->hdrListPostNo;
-    return res;
+    return *it;
 }
 
-QByteArray MemoryCache::messagePart(const QString &mailbox, uint uid, const QString &partId) const
+QByteArray MemoryCache::messagePart(const QString &mailbox, const uint uid, const QByteArray &partId) const
 {
     if (! parts.contains(mailbox))
         return QByteArray();
-    const QMap<uint, QMap<QString, QByteArray> > &mailboxParts = parts[ mailbox ];
+    const auto & mailboxParts = parts[mailbox];
     if (! mailboxParts.contains(uid))
         return QByteArray();
-    const QMap<QString, QByteArray> &messageParts = mailboxParts[ uid ];
+    const auto & messageParts = mailboxParts[uid];
     if (! messageParts.contains(partId))
         return QByteArray();
     return messageParts[ partId ];
@@ -190,51 +179,10 @@ void MemoryCache::setMessageThreading(const QString &mailbox, const QVector<Imap
     threads[mailbox] = threading;
 }
 
-bool MemoryCache::loadData()
-{
-    if (! fileName.isEmpty()) {
-        QFile file(fileName);
-        if (! file.open(QIODevice::ReadOnly))
-            return false;
-        QDataStream stream(&file);
-        stream >> mailboxes >> syncState >> seqToUid >> flags >> msgMetadata >> parts >> threads;
-        file.close();
-        return true;
-    }
-    return false;
-}
-
-bool MemoryCache::saveData() const
-{
-    if (! fileName.isEmpty()) {
-        QFile file(fileName);
-        if (! file.open(QIODevice::WriteOnly))
-            return false;
-        QDataStream stream(&file);
-        stream << mailboxes << syncState << seqToUid << flags << msgMetadata << parts << threads;
-        file.close();
-        return true;
-    }
-    return false;
-}
-
 void MemoryCache::setRenewalThreshold(const int days)
 {
     Q_UNUSED(days);
 }
 
 }
-}
-
-QDataStream &operator>>(QDataStream &stream, Imap::Mailbox::MemoryCache::LightMessageDataBundle &x)
-{
-    stream >> x.envelope >> x.internalDate >> x.serializedBodyStructure >> x.size >> x.hdrReferences >> x.hdrListPost
-           >> x.hdrListPostNo;
-    return stream;
-}
-
-QDataStream &operator<<(QDataStream &stream, const Imap::Mailbox::MemoryCache::LightMessageDataBundle &x)
-{
-    return stream << x.envelope << x.internalDate << x.serializedBodyStructure << x.size << x.hdrReferences << x.hdrListPost
-                     << x.hdrListPostNo;
 }

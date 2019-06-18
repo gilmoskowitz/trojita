@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -25,8 +25,9 @@
 
 #include <QUrl>
 #include "MailboxMetadata.h"
-#include "../Parser/Message.h"
+#include "Imap/Parser/Message.h"
 #include "Imap/Parser/ThreadingNode.h"
+#include "Imap/Parser/Uids.h"
 
 /** @short Namespace for IMAP interaction */
 namespace Imap
@@ -51,7 +52,7 @@ public:
         /** @short The IMAP's INTERNALDATE */
         QDateTime internalDate;
         /** @short RFC822.SIZE */
-        uint size;
+        quint64 size;
         /** @short Serialized form of BODYSTRUCTURE
 
         Due to the complex nature of BODYSTRUCTURE and the way we use, simly
@@ -69,7 +70,10 @@ public:
         /** @short Is the List-Post set to "NO"? */
         bool hdrListPostNo;
 
-        MessageDataBundle(): uid(0), size(0), hdrListPostNo(false) {}
+        MessageDataBundle();
+        MessageDataBundle(const uint uid, const Imap::Message::Envelope &envelope, const QDateTime &internalDate,
+                          const quint64 size, const QByteArray &serializedBodyStructure, const QList<QByteArray> &hdrReferences,
+                          const QList<QUrl> &hdrListPost, const bool hdrListPostNo);
 
         bool operator==(const MessageDataBundle &other) const
         {
@@ -80,7 +84,8 @@ public:
         }
     };
 
-    explicit AbstractCache(QObject *parent): QObject(parent) {}
+    explicit AbstractCache(QObject *parent);
+    virtual ~AbstractCache();
 
     /** @short Return a list of all known child mailboxes */
     virtual QList<MailboxMetadata> childMailboxes(const QString &mailbox) const = 0;
@@ -95,30 +100,32 @@ public:
     virtual void setMailboxSyncState(const QString &mailbox, const SyncState &state) = 0;
 
     /** @short Store the mapping of sequence numbers to UIDs */
-    virtual void setUidMapping(const QString &mailbox, const QList<uint> &seqToUid) = 0;
+    virtual void setUidMapping(const QString &mailbox, const Imap::Uids &seqToUid) = 0;
     /** @short Forget the cached seq->UID mapping for given mailbox */
     virtual void clearUidMapping(const QString &mailbox) = 0;
     /** @short Retrieve sequence to UID mapping */
-    virtual QList<uint> uidMapping(const QString &mailbox) const = 0;
+    virtual Imap::Uids uidMapping(const QString &mailbox) const = 0;
 
     /** @short Remove all messages in given mailbox from the cache */
     virtual void clearAllMessages(const QString &mailbox) = 0;
     /** @short Remove all info for given message in the mailbox from cache */
-    virtual void clearMessage(const QString mailbox, uint uid) = 0;
+    virtual void clearMessage(const QString mailbox, const uint uid) = 0;
 
     /** @short Returns all known data for a message in the given mailbox (except real parts data) */
     virtual MessageDataBundle messageMetadata(const QString &mailbox, uint uid) const = 0;
-    virtual void setMessageMetadata(const QString &mailbox, uint uid, const MessageDataBundle &metadata) = 0;
+    virtual void setMessageMetadata(const QString &mailbox, const uint uid, const MessageDataBundle &metadata) = 0;
 
     /** @short Retrieve flags for one message in a mailbox */
-    virtual QStringList msgFlags(const QString &mailbox, uint uid) const = 0;
+    virtual QStringList msgFlags(const QString &mailbox, const uint uid) const = 0;
     /** @short Save flags for one message in mailbox */
-    virtual void setMsgFlags(const QString &mailbox, uint uid, const QStringList &flags) = 0;
+    virtual void setMsgFlags(const QString &mailbox, const uint uid, const QStringList &flags) = 0;
 
     /** @short Return part data or a null QByteArray if none available */
-    virtual QByteArray messagePart(const QString &mailbox, uint uid, const QString &partId) const = 0;
+    virtual QByteArray messagePart(const QString &mailbox, const uint uid, const QByteArray &partId) const = 0;
     /** @short Save data for one message part */
-    virtual void setMsgPart(const QString &mailbox, uint uid, const QString &partId, const QByteArray &data) = 0;
+    virtual void setMsgPart(const QString &mailbox, const uint uid, const QByteArray &partId, const QByteArray &data) = 0;
+    /** @short Drop the data for a message part which is no longer needed */
+    virtual void forgetMessagePart(const QString &mailbox, const uint uid, const QByteArray &partId) = 0;
 
     /** @short Return cached threading info for a given mailbox */
     virtual QVector<Imap::Responses::ThreadingNode> messageThreading(const QString &mailbox) = 0;
@@ -129,7 +136,7 @@ public:
     virtual void setRenewalThreshold(const int days) = 0;
 
 signals:
-    /** @short Some cache error has occured */
+    /** @short Some cache error has occurred */
     void error(const QString &error) const;
 };
 

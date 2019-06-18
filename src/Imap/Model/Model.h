@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -31,20 +31,32 @@
 #include "Cache.h"
 #include "../ConnectionState.h"
 #include "../Parser/Parser.h"
+#include "CacheLoadingMode.h"
 #include "CopyMoveOperation.h"
 #include "FlagsOperation.h"
+#include "NetworkPolicy.h"
 #include "ParserState.h"
 #include "TaskFactory.h"
 
 #include "Common/Logging.h"
 
 class QAuthenticator;
-class QNetworkConfigurationManager;
 class QNetworkSession;
 class QSslError;
 
 class FakeCapabilitiesInjector;
 class ImapModelIdleTest;
+class LibMailboxSync;
+
+namespace Composer {
+class ImapMessageAttachmentItem;
+class ImapPartAttachmentItem;
+class MessageComposer;
+}
+
+namespace Streams {
+class SocketFactory;
+}
 
 /** @short Namespace for IMAP interaction */
 namespace Imap
@@ -61,15 +73,14 @@ class TreeItemMessage;
 class TreeItemPart;
 class MsgListModel;
 class MailboxModel;
-class DelayedAskForChildrenOfMailbox;
+class DummyNetworkWatcher;
+class SystemNetworkWatcher;
 
 class ImapTask;
 class KeepMailboxOpenTask;
 class TaskPresentationModel;
 template <typename SourceModel> class SubtreeClassSpecificItem;
-
-class SocketFactory;
-typedef std::auto_ptr<SocketFactory> SocketFactoryPtr;
+typedef std::unique_ptr<Streams::SocketFactory> SocketFactoryPtr;
 
 /** @short Progress of mailbox synchronization with the IMAP server */
 typedef enum { STATE_WAIT_FOR_CONN, /**< Waiting for connection to become active */
@@ -86,6 +97,7 @@ class Model: public QAbstractItemModel
 
     Q_PROPERTY(QString imapUser READ imapUser WRITE setImapUser)
     Q_PROPERTY(QString imapPassword READ imapPassword WRITE setImapPassword RESET unsetImapPassword)
+    Q_PROPERTY(QString imapAuthError READ imapAuthError NOTIFY imapAuthErrorChanged)
     Q_PROPERTY(bool isNetworkAvailable READ isNetworkAvailable NOTIFY networkPolicyChanged)
     Q_PROPERTY(bool isNetworkOnline READ isNetworkOnline NOTIFY networkPolicyChanged)
 
@@ -93,27 +105,6 @@ class Model: public QAbstractItemModel
     enum RWMode {
         ReadOnly /**< @short Use EXAMINE or leave it in SELECTed mode*/,
         ReadWrite /**< @short Invoke SELECT if necessarry */
-    };
-
-    /** @short Policy for accessing network */
-    enum NetworkPolicy {
-        /**< @short No access to the network at all
-
-        All network activity is suspended. If an action requires network access,
-        it will either fail or be queued for later. */
-        NETWORK_OFFLINE,
-        /** @short Connections are possible, but expensive
-
-        Information that is cached is preferred, as long as it is usable.
-        Trojita will never miss a mail in this mode, but for example it won't
-        check for new mailboxes. */
-        NETWORK_EXPENSIVE,
-        /** @short Connections have zero cost
-
-        Normal mode of operation. All network activity is assumed to have zero
-        cost and Trojita is free to ask network as often as possible. It will
-        still use local cache when it makes sense, though. */
-        NETWORK_ONLINE
     };
 
     mutable AbstractCache *m_cache;
@@ -131,7 +122,7 @@ class Model: public QAbstractItemModel
 
 
 public:
-    Model(QObject *parent, AbstractCache *cache, SocketFactoryPtr m_socketFactory, TaskFactoryPtr m_taskFactory, bool offline);
+    Model(QObject *parent, AbstractCache *cache, SocketFactoryPtr m_socketFactory, TaskFactoryPtr m_taskFactory);
     ~Model();
 
     virtual QModelIndex index(int row, int column, const QModelIndex &parent) const;
@@ -176,8 +167,10 @@ public:
     */
     void resyncMailbox(const QModelIndex &mbox);
 
+    /** @short Mark all messages in a given mailbox as read */
+    void markMailboxAsRead(const QModelIndex &mailbox);
     /** @short Add/Remove a flag for the indicated message */
-    void setMessageFlags(const QModelIndexList &messages, const QString flag, const FlagsOperation marked);
+    ImapTask *setMessageFlags(const QModelIndexList &messages, const QString flag, const FlagsOperation marked);
     /** @short Ask the server to set/unset the \\Deleted flag for the indicated messages */
     void markMessagesDeleted(const QModelIndexList &messages, const FlagsOperation marked);
     /** @short Ask the server to set/unset the \\Seen flag for the indicated messages */
@@ -187,10 +180,10 @@ public:
     void expungeMailbox(const QModelIndex &mailbox);
 
     /** @short Copy or move a sequence of messages between two mailboxes */
-    void copyMoveMessages(TreeItemMailbox *sourceMbox, const QString &destMboxName, QList<uint> uids, const CopyMoveOperation op);
+    void copyMoveMessages(TreeItemMailbox *sourceMbox, const QString &destMboxName, Imap::Uids uids, const CopyMoveOperation op);
 
     /** @short Create a new mailbox */
-    void createMailbox(const QString &name);
+    void createMailbox(const QString &name, const AutoSubscription subscription = AutoSubscription::NO_EXPLICIT_SUBSCRIPTION);
     /** @short Delete an existing mailbox */
     void deleteMailbox(const QString &name);
 
@@ -237,9 +230,6 @@ public:
     */
     static TreeItem *realTreeItem(QModelIndex index, const Model **whichModel = 0, QModelIndex *translatedIndex = 0);
 
-    /** @short Walks the index hierarchy up until it finds a message which owns this part/message */
-    static QModelIndex findMessageForItem(QModelIndex index);
-
     /** @short Inform the model that data for this message won't likely be requested in near future
 
     Model will transform the corresponding TreeItemMessage into the state similar to how it would look
@@ -263,8 +253,9 @@ public:
     /** @short Return the server's response to the ID command
 
     When the server indicates that the ID command is available, Trojitá will always send the ID command.  The information sent to
-    the server is controlled by the trojita-imap-enable-id property; if it is set, Trojitá will tell the truth and proudly present
-    herself under her own name. If it isn't set, it will just send NIL on the wire.
+    the server is controlled by the trojita-imap-id-no-versions property.  By default, Trojitá will tell the truth and proudly
+    present herself under her own name and using detailed version information and OS info. If set, it will just send the Trojita
+    name, but no version info.
 
     The command is always sent upon each connection (ie. one protocol session, not the mailbox session).  The result of this
     function will therefore not make much sense (like be empty) when the model has always been offline.  Each reconnection updates
@@ -290,16 +281,15 @@ public:
     */
     void setCapabilitiesBlacklist(const QStringList &blacklist);
 
+    bool isCatenateSupported() const;
+    bool isGenUrlAuthSupported() const;
+    bool isImapSubmissionSupported() const;
+
+    void setNumberRefreshInterval(const int interval);
+
 public slots:
     /** @short Ask for an updated list of mailboxes on the server */
     void reloadMailboxList();
-
-    /** @short Set the netowrk access policy to "no access allowed" */
-    void setNetworkOffline() { setNetworkPolicy(NETWORK_OFFLINE); }
-    /** @short Set the network access policy to "possible, but expensive" */
-    void setNetworkExpensive() { setNetworkPolicy(NETWORK_EXPENSIVE); }
-    /** @short Set the network access policy to "it's cheap to use it" */
-    void setNetworkOnline() { setNetworkPolicy(NETWORK_ONLINE); }
 
     /** @short Try to maintain a connection to the given mailbox
 
@@ -320,6 +310,8 @@ public slots:
 
     void invalidateAllMessageCounts();
 
+    QString imapAuthError() const;
+
 private slots:
     /** @short Helper for low-level state change propagation */
     void handleSocketStateChanged(Imap::Parser *parser, Imap::ConnectionState state);
@@ -336,7 +328,7 @@ private slots:
     /** @short A maintaining task is about to die */
     void slotTaskDying(QObject *obj);
 
-    void slotNetworkConnectivityStatusChanged(const bool online);
+    void setImapAuthError(const QString &error);
 
 signals:
     /** @short This signal is emitted then the server sent us an ALERT response code */
@@ -354,13 +346,17 @@ signals:
 
     /** @short The network policy has changed
 
-    This signal is emited whenever the network policy (might) got changed to any state and for any reason. No filtering for false
-    positives is done, i.e. it might be emited even when no change has actually taken place.
+    This signal is emitted whenever the network policy (might) got changed to any state and for any reason. No filtering for false
+    positives is done, i.e. it might be emitted even when no change has actually taken place.
     */
     void networkPolicyChanged();
 
-    /** @short A connection error has been encountered */
-    void connectionError(const QString &message);
+    /** @short Something bad happened to the network connectivity */
+    void networkError(const QString &message);
+
+    /** @short An error at the application layer, e.g. an IMAP error, synchronization error, etc */
+    void imapError(const QString &message);
+
     /** @short The server requests the user to authenticate
 
     The user is expected to file username and password through setting the "imapUser" and "imapPassword" properties.  The imapUser
@@ -384,6 +380,9 @@ signals:
     */
     void needsSslDecision(const QList<QSslCertificate> &certificates, const QList<QSslError> &sslErrors);
 
+    /** @short Inform the user that it is advised to enable STARTTLS in future connection attempts */
+    void requireStartTlsInFuture();
+
     /** @short The amount of messages in the indicated mailbox might have changed */
     void messageCountPossiblyChanged(const QModelIndex &mailbox);
 
@@ -395,9 +394,11 @@ signals:
     void mailboxDeletionSucceded(const QString &mailbox);
     /** @short Mailbox deletion failed */
     void mailboxDeletionFailed(const QString &mailbox, const QString &message);
+    /** @short Got an error while syncing a mailbox */
+    void mailboxSyncFailed(const QString &mailbox, const QString &message);
 
     /** @short Inform the GUI about the progress of a connection */
-    void connectionStateChanged(QObject *parser, Imap::ConnectionState state);   // got to use fully qualified namespace here
+    void connectionStateChanged(uint parserId, Imap::ConnectionState state);   // got to use fully qualified namespace here
 
     /** @short The parser has encountered a fatal error */
     void logParserFatalError(uint parser, const QString &exceptionClass, const QString &message, const QByteArray &line, int position);
@@ -417,6 +418,8 @@ signals:
 
     void logged(uint parserId, const Common::LogMessage &message);
 
+    void imapAuthErrorChanged(const QString &error);
+
 private:
     Model &operator=(const Model &);  // don't implement
     Model(const Model &);  // don't implement
@@ -433,13 +436,12 @@ private:
     friend class ThreadingMsgListModel; // needs access to taskFactory
     friend class SubtreeClassSpecificItem<Model>; // needs access to createIndex()
 
-    friend class DelayedAskForChildrenOfMailbox; // needs access to askForChildrenOfMailbox();
-    friend class DelayedAskForMessagesInMailbox; // needs access to askForMessagesInMailbox();
     friend class IdleLauncher;
 
     friend class ImapTask;
     friend class FetchMsgPartTask;
     friend class UpdateFlagsTask;
+    friend class UpdateFlagsOfAllMessagesTask;
     friend class ListChildMailboxesTask;
     friend class NumberOfMessagesTask;
     friend class FetchMsgMetadataTask;
@@ -466,14 +468,18 @@ private:
     friend class UidSubmitTask;
 
     friend class TestingTaskFactory; // needs access to socketFactory
+    friend class DummyNetworkWatcher; // needs access to the network policy manipulation
+    friend class SystemNetworkWatcher; // needs access to the network policy manipulation
+    friend class NetworkWatcher; // needs access to the network policy manipulation
 
     friend class ::FakeCapabilitiesInjector; // for injecting fake capabilities
     friend class ::ImapModelIdleTest; // needs access to findTaskResponsibleFor() for IDLE testing
     friend class TaskPresentationModel; // needs access to the ParserState
+    friend class ::LibMailboxSync; // needs access to accessParser/ParserState
 
-    friend class ImapMessageAttachmentItem; // needs access to findMailboxByName and findMessagesByUids
-    friend class ImapPartAttachmentItem; // dtto
-    friend class MessageComposer; // dtto
+    friend class Composer::ImapMessageAttachmentItem; // needs access to findMailboxByName and findMessagesByUids
+    friend class Composer::ImapPartAttachmentItem; // dtto
+    friend class Composer::MessageComposer; // dtto
 
     void askForChildrenOfMailbox(TreeItemMailbox *item, bool forceReload);
     void askForMessagesInMailbox(TreeItemMsgList *item);
@@ -486,10 +492,10 @@ private:
 
     void finalizeList(Parser *parser, TreeItemMailbox *const mailboxPtr);
     void finalizeIncrementalList(Parser *parser, const QString &parentMailboxName);
-    void finalizeFetchPart(TreeItemMailbox *const mailbox, const uint sequenceNo, const QString &partId);
+    bool finalizeFetchPart(TreeItemMailbox *const mailbox, const uint sequenceNo, const QByteArray &partId);
     void genericHandleFetch(TreeItemMailbox *mailbox, const Imap::Responses::Fetch *const resp);
 
-    void replaceChildMailboxes(TreeItemMailbox *mailboxPtr, const QList<TreeItem *> mailboxes);
+    void replaceChildMailboxes(TreeItemMailbox *mailboxPtr, const TreeItemChildrenList &mailboxes);
     void updateCapabilities(Parser *parser, const QStringList capabilities);
 
     TreeItem *translatePtr(const QModelIndex &index) const;
@@ -499,8 +505,8 @@ private:
     TreeItemMailbox *findMailboxByName(const QString &name) const;
     TreeItemMailbox *findMailboxByName(const QString &name, const TreeItemMailbox *const root) const;
     TreeItemMailbox *findParentMailboxByName(const QString &name) const;
-    QList<TreeItemMessage *> findMessagesByUids(const TreeItemMailbox *const mailbox, const QList<uint> &uids);
-    QList<TreeItem*>::iterator findMessageOrNextOneByUid(TreeItemMsgList *list, const uint uid);
+    QList<TreeItemMessage *> findMessagesByUids(const TreeItemMailbox *const mailbox, const Imap::Uids &uids);
+    TreeItemChildrenList::iterator findMessageOrNextOneByUid(TreeItemMsgList *list, const uint uid);
 
     static TreeItemMailbox *mailboxForSomeItem(QModelIndex index);
 
@@ -549,14 +555,11 @@ private:
 
     QStringList onlineMessageFetch;
 
-    uint m_lastParserId;
-
     /** @short Model visualizing the state of the tasks */
     TaskPresentationModel *m_taskModel;
 
     QMap<QByteArray,QByteArray> m_idResult;
 
-    QHash<QString,QString> m_specialFlagNames;
     mutable QSet<QString> m_flagLiterals;
 
     /** @short Username for login */
@@ -564,20 +567,24 @@ private:
     /** @short Cached copy of the IMAP password */
     QString m_imapPassword;
     /** @short Is the IMAP password cached in the Model already? */
-    bool m_hasImapPassword;
+    enum class PasswordAvailability {
+        NOT_REQUESTED,
+        ASKED_WAITING,
+        AVAILABLE,
+    };
+    PasswordAvailability m_hasImapPassword;
+    /** @short Contains IMAP error output while password prompt process*/
+    QString m_imapAuthError;
 
     QTimer *m_periodicMailboxNumbersRefresh;
 
     QStringList m_capabilitiesBlacklist;
 
-    QNetworkConfigurationManager *m_networkConfigurationManager;
-    QNetworkSession *m_networkSession;
-    /** @short True iff the application is temporarily offline due to the connectivity being lost */
-    NetworkPolicy m_userPreferredNetworkMode;
-
 protected slots:
     void responseReceived();
     void responseReceived(Imap::Parser *parser);
+    void askForChildrenOfMailbox(const QModelIndex &index, const Imap::Mailbox::CacheLoadingMode cacheMode);
+    void askForMessagesInMailbox(const QModelIndex &index);
 
     void runReadyTasks();
 

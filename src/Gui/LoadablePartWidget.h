@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -25,13 +25,15 @@
 #include <QPersistentModelIndex>
 #include <QStackedWidget>
 
-#include "AbstractPartWidget.h"
-#include "SimplePartWidget.h"
+#include "Gui/AbstractPartWidget.h"
+#include "Gui/PartWalker.h"
 
 class QPushButton;
 
 namespace Gui
 {
+
+class MessageView;
 
 /** @short Widget which implements delayed loading of message parts
 
@@ -44,25 +46,25 @@ class LoadablePartWidget : public QStackedWidget, public AbstractPartWidget
 {
     Q_OBJECT
 public:
-    /** @short Load when the widget becomes visible, or wait until the user clicks a button? */
-    typedef enum {
-        LOAD_ON_SHOW, /**< @short Load as soon as the widget becomes visible */
-        LOAD_ON_CLICK /**< @short Load onlt after the user has clicked a button */
-    } LoadingTriggerMode;
     LoadablePartWidget(QWidget *parent, Imap::Network::MsgPartNetAccessManager *manager, const QModelIndex &part,
-                       QObject *wheelEventFilter, QObject *guiInteractionTarget, const LoadingTriggerMode mode);
-    QString quoteMe() const;
-    virtual void reloadContents() {}
+                       PartWidgetFactory *factory, int recursionDepth,
+                       const UiUtils::PartLoadingOptions loadingMode);
+    QString quoteMe() const override;
+    virtual void reloadContents() override;
+    virtual void zoomIn() override;
+    virtual void zoomOut() override;
+    virtual void zoomOriginal() override;
 protected:
-    virtual void showEvent(QShowEvent *event);
+    virtual void showEvent(QShowEvent *event) override;
 private slots:
     void loadClicked();
 private:
     Imap::Network::MsgPartNetAccessManager *manager;
     QPersistentModelIndex partIndex;
-    SimplePartWidget *realPart;
-    QObject *wheelEventFilter;
-    QObject *guiInteractionTarget;
+    PartWidgetFactory *m_factory;
+    int m_recursionDepth;
+    UiUtils::PartLoadingOptions m_loadingMode;
+    QWidget *realPart;
     QPushButton *loadButton;
     bool m_loadOnShow;
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -33,9 +33,9 @@ CombinedCache::CombinedCache(QObject *parent, const QString &name, const QString
     AbstractCache(parent), name(name), cacheDir(cacheDir)
 {
     sqlCache = new SQLCache(this);
-    connect(sqlCache, SIGNAL(error(QString)), this, SIGNAL(error(QString)));
+    connect(sqlCache, &AbstractCache::error, this, &AbstractCache::error);
     diskPartCache = new DiskPartCache(this, cacheDir);
-    connect(diskPartCache, SIGNAL(error(QString)), this, SIGNAL(error(QString)));
+    connect(diskPartCache, &DiskPartCache::error, this, &AbstractCache::error);
 }
 
 CombinedCache::~CombinedCache()
@@ -72,12 +72,12 @@ void CombinedCache::setMailboxSyncState(const QString &mailbox, const SyncState 
     sqlCache->setMailboxSyncState(mailbox, state);
 }
 
-QList<uint> CombinedCache::uidMapping(const QString &mailbox) const
+Imap::Uids CombinedCache::uidMapping(const QString &mailbox) const
 {
     return sqlCache->uidMapping(mailbox);
 }
 
-void CombinedCache::setUidMapping(const QString &mailbox, const QList<uint> &seqToUid)
+void CombinedCache::setUidMapping(const QString &mailbox, const Imap::Uids &seqToUid)
 {
     sqlCache->setUidMapping(mailbox, seqToUid);
 }
@@ -93,33 +93,33 @@ void CombinedCache::clearAllMessages(const QString &mailbox)
     diskPartCache->clearAllMessages(mailbox);
 }
 
-void CombinedCache::clearMessage(const QString mailbox, uint uid)
+void CombinedCache::clearMessage(const QString mailbox, const uint uid)
 {
     sqlCache->clearMessage(mailbox, uid);
     diskPartCache->clearMessage(mailbox, uid);
 }
 
-QStringList CombinedCache::msgFlags(const QString &mailbox, uint uid) const
+QStringList CombinedCache::msgFlags(const QString &mailbox, const uint uid) const
 {
     return sqlCache->msgFlags(mailbox, uid);
 }
 
-void CombinedCache::setMsgFlags(const QString &mailbox, uint uid, const QStringList &flags)
+void CombinedCache::setMsgFlags(const QString &mailbox, const uint uid, const QStringList &flags)
 {
     sqlCache->setMsgFlags(mailbox, uid, flags);
 }
 
-AbstractCache::MessageDataBundle CombinedCache::messageMetadata(const QString &mailbox, uint uid) const
+AbstractCache::MessageDataBundle CombinedCache::messageMetadata(const QString &mailbox, const uint uid) const
 {
     return sqlCache->messageMetadata(mailbox, uid);
 }
 
-void CombinedCache::setMessageMetadata(const QString &mailbox, uint uid, const MessageDataBundle &metadata)
+void CombinedCache::setMessageMetadata(const QString &mailbox, const uint uid, const MessageDataBundle &metadata)
 {
     sqlCache->setMessageMetadata(mailbox, uid, metadata);
 }
 
-QByteArray CombinedCache::messagePart(const QString &mailbox, uint uid, const QString &partId) const
+QByteArray CombinedCache::messagePart(const QString &mailbox, const uint uid, const QByteArray &partId) const
 {
     QByteArray res = sqlCache->messagePart(mailbox, uid, partId);
     if (res.isEmpty()) {
@@ -128,13 +128,19 @@ QByteArray CombinedCache::messagePart(const QString &mailbox, uint uid, const QS
     return res;
 }
 
-void CombinedCache::setMsgPart(const QString &mailbox, uint uid, const QString &partId, const QByteArray &data)
+void CombinedCache::setMsgPart(const QString &mailbox, const uint uid, const QByteArray &partId, const QByteArray &data)
 {
     if (data.size() < 1024 * 1024) {
         sqlCache->setMsgPart(mailbox, uid, partId, data);
     } else {
         diskPartCache->setMsgPart(mailbox, uid, partId, data);
     }
+}
+
+void CombinedCache::forgetMessagePart(const QString &mailbox, const uint uid, const QByteArray &partId)
+{
+    sqlCache->forgetMessagePart(mailbox, uid, partId);
+    diskPartCache->forgetMessagePart(mailbox, uid, partId);
 }
 
 QVector<Imap::Responses::ThreadingNode> CombinedCache::messageThreading(const QString &mailbox)

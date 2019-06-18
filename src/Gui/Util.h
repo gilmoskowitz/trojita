@@ -1,4 +1,5 @@
 /* Copyright (C) 2006 - 2011 Thomas Gahr <thomas.gahr@physik.uni-muenchen.de>
+   Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -24,8 +25,12 @@
 #ifndef GUI_UTIL_H
 #define GUI_UTIL_H
 
+#include <QMessageBox>
 #include <QString>
 
+class QColor;
+class QFont;
+class QSettings;
 class QWidget;
 
 namespace Gui
@@ -34,10 +39,12 @@ namespace Gui
 namespace Util
 {
 
-/** @short Center widget on screen containing its parent widget of the mousepointer */
-void centerWidgetOnScreen(QWidget *widget, bool centerOnCursorScreen=true);
-
 QString pkgDataDir();
+
+int askForSomethingUnlessTold(const QString &title, const QString &message, const QString &settingsName,
+                              QMessageBox::StandardButtons buttons, QWidget *parent, QSettings *settings);
+
+QString resizedImageAsDataUrl(const QString &fileName, const int extent);
 
 } // namespace Util
 

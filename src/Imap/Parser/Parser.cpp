@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -86,17 +86,16 @@
 namespace Imap
 {
 
-Parser::Parser(QObject *parent, Socket *socket, const uint myId):
+Parser::Parser(QObject *parent, Streams::Socket *socket, const uint myId):
     QObject(parent), socket(socket), m_lastTagUsed(0), idling(false), waitForInitialIdle(false),
-    literalPlus(false), waitingForContinuation(false), startTlsInProgress(false), compressDeflateInProgress(false),
+    m_literalPlus(LiteralPlus::Unsupported), waitingForContinuation(false), startTlsInProgress(false), compressDeflateInProgress(false),
     waitingForConnection(true), waitingForEncryption(socket->isConnectingEncryptedSinceStart()), waitingForSslPolicy(false),
-    readingMode(ReadingLine), oldLiteralPosition(0), m_parserId(myId)
+    m_expectsInitialGreeting(true), readingMode(ReadingLine), oldLiteralPosition(0), m_parserId(myId)
 {
-    connect(socket, SIGNAL(disconnected(const QString &)),
-            this, SLOT(handleDisconnected(const QString &)));
-    connect(socket, SIGNAL(readyRead()), this, SLOT(handleReadyRead()));
-    connect(socket, SIGNAL(stateChanged(Imap::ConnectionState,QString)), this, SLOT(slotSocketStateChanged(Imap::ConnectionState,QString)));
-    connect(socket, SIGNAL(encrypted()), this, SLOT(handleSocketEncrypted()));
+    connect(socket, &Streams::Socket::disconnected, this, &Parser::handleDisconnected);
+    connect(socket, &Streams::Socket::readyRead, this, &Parser::handleReadyRead);
+    connect(socket, &Streams::Socket::stateChanged, this, &Parser::slotSocketStateChanged);
+    connect(socket, &Streams::Socket::encrypted, this, &Parser::handleSocketEncrypted);
 }
 
 CommandHandle Parser::noop()
@@ -249,7 +248,7 @@ CommandHandle Parser::lSub(const QString &reference, const QString &mailbox)
 CommandHandle Parser::status(const QString &mailbox, const QStringList &fields)
 {
     return queueCommand(Commands::Command("STATUS") << encodeImapFolderName(mailbox) <<
-                        Commands::PartOfCommand(Commands::ATOM, "(" + fields.join(QLatin1String(" ")).toUtf8() + ")")
+                        Commands::PartOfCommand(Commands::ATOM, "(" + fields.join(QStringLiteral(" ")).toUtf8() + ")")
                        );
 }
 
@@ -258,7 +257,7 @@ CommandHandle Parser::append(const QString &mailbox, const QByteArray &message, 
     Commands::Command command("APPEND");
     command << encodeImapFolderName(mailbox);
     if (flags.count())
-        command << Commands::PartOfCommand(Commands::ATOM, "(" + flags.join(QLatin1String(" ")).toUtf8() + ")");
+        command << Commands::PartOfCommand(Commands::ATOM, "(" + flags.join(QStringLiteral(" ")).toUtf8() + ")");
     if (timestamp.isValid())
         command << Commands::PartOfCommand(Imap::dateTimeToInternalDate(timestamp).toUtf8());
     command << Commands::PartOfCommand(Commands::LITERAL, message);
@@ -272,7 +271,7 @@ CommandHandle Parser::appendCatenate(const QString &mailbox, const QList<Imap::M
     Commands::Command command("APPEND");
     command << encodeImapFolderName(mailbox);
     if (flags.count())
-        command << Commands::PartOfCommand(Commands::ATOM, "(" + flags.join(QLatin1String(" ")).toUtf8() + ")");
+        command << Commands::PartOfCommand(Commands::ATOM, "(" + flags.join(QStringLiteral(" ")).toUtf8() + ")");
     if (timestamp.isValid())
         command << Commands::PartOfCommand(Imap::dateTimeToInternalDate(timestamp).toUtf8());
     command << Commands::PartOfCommand(Commands::ATOM_NO_SPACE_AROUND, " CATENATE (");
@@ -338,7 +337,7 @@ CommandHandle Parser::uidSearchUid(const QByteArray &sequence)
 
 CommandHandle Parser::uidESearchUid(const QByteArray &sequence)
 {
-    Commands::Command command("UID SEARCH RETURN ()");
+    Commands::Command command("UID SEARCH RETURN (ALL)");
     command << Commands::PartOfCommand(Commands::ATOM, sequence);
     return queueCommand(command);
 }
@@ -349,11 +348,17 @@ CommandHandle Parser::sortHelper(const QByteArray &command, const QStringList &s
     Commands::Command cmd;
 
     cmd << Commands::PartOfCommand(Commands::ATOM, command) <<
-        Commands::PartOfCommand(Commands::ATOM, "(" + sortCriteria.join(QLatin1String(" ")).toUtf8() + ")" ) <<
+        Commands::PartOfCommand(Commands::ATOM, "(" + sortCriteria.join(QStringLiteral(" ")).toUtf8() + ")" ) <<
         charset;
 
-    for (QStringList::const_iterator it = searchCriteria.begin(); it != searchCriteria.end(); ++it)
-        cmd << it->toUtf8();
+    if (searchCriteria.size() == 1) {
+        // Hack: if it's just a single item, let's assume it's already well-formatted by the caller.
+        // This is required in the current shape of the API if we want to allow the user to type in their queries directly.
+        cmd << Commands::PartOfCommand(Commands::ATOM, searchCriteria.front().toUtf8());
+    } else {
+        for (QStringList::const_iterator it = searchCriteria.begin(); it != searchCriteria.end(); ++it)
+            cmd << it->toUtf8();
+    }
 
     return queueCommand(cmd);
 }
@@ -371,13 +376,13 @@ CommandHandle Parser::uidSort(const QStringList &sortCriteria, const QByteArray 
 CommandHandle Parser::uidESort(const QStringList &sortCriteria, const QByteArray &charset, const QStringList &searchCriteria,
                                const QStringList &returnOptions)
 {
-    return sortHelper("UID SORT RETURN (" + returnOptions.join(QLatin1String(" ")).toUtf8() + ")",
+    return sortHelper("UID SORT RETURN (" + returnOptions.join(QStringLiteral(" ")).toUtf8() + ")",
                       sortCriteria, charset, searchCriteria);
 }
 
 CommandHandle Parser::uidESearch(const QByteArray &charset, const QStringList &searchCriteria, const QStringList &returnOptions)
 {
-    return searchHelper("UID SEARCH RETURN (" + returnOptions.join(QLatin1String(" ")).toUtf8() + ")",
+    return searchHelper("UID SEARCH RETURN (" + returnOptions.join(QStringLiteral(" ")).toUtf8() + ")",
                         searchCriteria, charset);
 }
 
@@ -415,7 +420,7 @@ CommandHandle Parser::uidThread(const QByteArray &algo, const QByteArray &charse
 CommandHandle Parser::uidEThread(const QByteArray &algo, const QByteArray &charset, const QStringList &searchCriteria,
                                  const QStringList &returnOptions)
 {
-    return threadHelper("UID THREAD RETURN (" + returnOptions.join(QLatin1String(" ")).toUtf8() + ")",
+    return threadHelper("UID THREAD RETURN (" + returnOptions.join(QStringLiteral(" ")).toUtf8() + ")",
                         algo, charset, searchCriteria);
 }
 
@@ -423,7 +428,7 @@ CommandHandle Parser::fetch(const Sequence &seq, const QStringList &items, const
 {
     Commands::Command cmd = Commands::Command("FETCH") <<
                         Commands::PartOfCommand(Commands::ATOM, seq.toByteArray()) <<
-                        Commands::PartOfCommand(Commands::ATOM, '(' + items.join(QLatin1String(" ")).toUtf8() + ')');
+                        Commands::PartOfCommand(Commands::ATOM, '(' + items.join(QStringLiteral(" ")).toUtf8() + ')');
     if (!uint64Modifiers.isEmpty()) {
         cmd << Commands::PartOfCommand(Commands::ATOM_NO_SPACE_AROUND, " (");
         for (QMap<QByteArray, quint64>::const_iterator it = uint64Modifiers.constBegin(); it != uint64Modifiers.constEnd(); ++it) {
@@ -451,11 +456,17 @@ CommandHandle Parser::copy(const Sequence &seq, const QString &mailbox)
                         encodeImapFolderName(mailbox));
 }
 
-CommandHandle Parser::uidFetch(const Sequence &seq, const QStringList &items)
+CommandHandle Parser::uidFetch(const Sequence &seq, const QList<QByteArray> &items)
 {
+    QByteArray buf;
+    Q_FOREACH(const QByteArray &item, items) {
+        buf += ' ' + item;
+    }
+    buf += ')';
+    buf[0] = '(';
     return queueCommand(Commands::Command("UID FETCH") <<
                         Commands::PartOfCommand(Commands::ATOM, seq.toByteArray()) <<
-                        Commands::PartOfCommand(Commands::ATOM, '(' + items.join(QLatin1String(" ")).toUtf8() + ')'));
+                        Commands::PartOfCommand(Commands::ATOM, buf));
 }
 
 CommandHandle Parser::uidStore(const Sequence &seq, const QString &item, const QString &value)
@@ -611,6 +622,22 @@ void Parser::queueResponse(const QSharedPointer<Responses::AbstractResponse> &re
     if (respQueue.size() == 1) {
         emit responseReceived(this);
     }
+
+    if (waitingForContinuation) {
+        // Check whether this is the server's way of informing us that the continuation request is not going to arrive
+        QSharedPointer<Responses::State> stateResponse = resp.dynamicCast<Responses::State>();
+        Q_ASSERT(!literalCommandTag.isEmpty());
+        if (stateResponse && stateResponse->tag == literalCommandTag) {
+            literalCommandTag.clear();
+            waitingForContinuation = false;
+            cmdQueue.pop_front();
+            QTimer::singleShot(0, this, SLOT(executeCommands()));
+            if (stateResponse->kind != Responses::NO && stateResponse->kind != Responses::BAD) {
+                // FIXME: use parserWarning when it's adapted throughout the code
+                qDebug() << "Synchronized literal rejected but response is neither NO nor BAD";
+            }
+        }
+    }
 }
 
 bool Parser::hasResponse() const
@@ -630,7 +657,7 @@ QSharedPointer<Responses::AbstractResponse> Parser::getResponse()
 
 QByteArray Parser::generateTag()
 {
-    return QString::fromUtf8("y%1").arg(m_lastTagUsed++).toUtf8();
+    return QStringLiteral("y%1").arg(m_lastTagUsed++).toUtf8();
 }
 
 void Parser::handleReadyRead()
@@ -808,7 +835,7 @@ void Parser::executeACommand()
         }
         break;
         case Commands::LITERAL:
-            if (literalPlus) {
+            if (m_literalPlus == LiteralPlus::Plus || (m_literalPlus == LiteralPlus::Minus && part.text.size() <= 4096)) {
                 buf.append('{');
                 buf.append(QByteArray::number(part.text.size()));
                 buf.append("+}\r\n");
@@ -828,6 +855,9 @@ void Parser::executeACommand()
                 socket->write(buf);
                 part.numberSent = true;
                 waitingForContinuation = true;
+                Q_ASSERT(literalCommandTag.isEmpty());
+                literalCommandTag = cmd.cmds.first().text;
+                Q_ASSERT(!literalCommandTag.isEmpty());
                 emit lineSent(this, sensitiveCommand ? privateMessage : buf);
                 return; // and wait for continuation request
             }
@@ -906,11 +936,15 @@ void Parser::processLine(QByteArray line)
         qDebug() << m_parserId << "<<<" << debugLine;
 #endif
     emit lineReceived(this, line);
-    if (line.startsWith("* ")) {
+    if (m_expectsInitialGreeting && !line.startsWith("* ")) {
+        throw NotAnImapServerError(std::string(), line, -1);
+    } else if (line.startsWith("* ")) {
+        m_expectsInitialGreeting = false;
         queueResponse(parseUntagged(line));
     } else if (line.startsWith("+ ")) {
         if (waitingForContinuation) {
             waitingForContinuation = false;
+            literalCommandTag.clear();
             QTimer::singleShot(0, this, SLOT(executeCommands()));
         } else if (waitForInitialIdle) {
             waitForInitialIdle = false;
@@ -1001,11 +1035,7 @@ QSharedPointer<Responses::AbstractResponse> Parser::parseUntaggedText(
             QByteArray str = *it;
             if (str.endsWith("\r\n"))
                 str.chop(2);
-#if QT_VERSION >= QT_VERSION_CHECK(5, 0, 0)
             capabilities << QString::fromUtf8(str);
-#else
-            capabilities << QString::fromUtf8(str.constData());
-#endif
         }
         if (!capabilities.count())
             throw NoData(line, start);
@@ -1096,9 +1126,9 @@ QSharedPointer<Responses::AbstractResponse> Parser::parseTagged(const QByteArray
                new Responses::State(tag, kind, line, pos));
 }
 
-void Parser::enableLiteralPlus(const bool enabled)
+void Parser::enableLiteralPlus(const LiteralPlus mode)
 {
-    literalPlus = enabled;
+    m_literalPlus = mode;
 }
 
 void Parser::handleDisconnected(const QString &reason)
@@ -1134,6 +1164,9 @@ void Parser::slotSocketStateChanged(const Imap::ConnectionState connState, const
         emit lineReceived(this, "*** Connection established");
         waitingForConnection = false;
         QTimer::singleShot(0, this, SLOT(executeCommands()));
+    } else if (connState == CONN_STATE_AUTHENTICATED) {
+        // unit tests: don't wait for the initial untagged response greetings
+        m_expectsInitialGreeting = false;
     }
     emit lineReceived(this, "*** " + message.toUtf8());
     emit connectionStateChanged(this, connState);

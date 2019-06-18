@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -43,18 +43,7 @@ class MemoryCache : public AbstractCache
 {
     Q_OBJECT
 public:
-    struct LightMessageDataBundle {
-        Imap::Message::Envelope envelope;
-        QByteArray serializedBodyStructure;
-        QDateTime internalDate;
-        uint size;
-        QList<QByteArray> hdrReferences;
-        QList<QUrl> hdrListPost;
-        bool hdrListPostNo;
-    };
-
-    MemoryCache(QObject *parent, const QString &fileName);
-    ~MemoryCache();
+    explicit MemoryCache(QObject *parent);
 
     virtual QList<MailboxMetadata> childMailboxes(const QString &mailbox) const;
     virtual bool childMailboxesFresh(const QString &mailbox) const;
@@ -63,21 +52,22 @@ public:
     virtual SyncState mailboxSyncState(const QString &mailbox) const;
     virtual void setMailboxSyncState(const QString &mailbox, const SyncState &state);
 
-    virtual void setUidMapping(const QString &mailbox, const QList<uint> &mapping);
+    virtual void setUidMapping(const QString &mailbox, const Imap::Uids &mapping);
     virtual void clearUidMapping(const QString &mailbox);
-    virtual QList<uint> uidMapping(const QString &mailbox) const;
+    virtual Imap::Uids uidMapping(const QString &mailbox) const;
 
     virtual void clearAllMessages(const QString &mailbox);
-    virtual void clearMessage(const QString mailbox, uint uid);
+    virtual void clearMessage(const QString mailbox, const uint uid);
 
-    virtual MessageDataBundle messageMetadata(const QString &mailbox, uint uid) const;
-    virtual void setMessageMetadata(const QString &mailbox, uint uid, const MessageDataBundle &metadata);
+    virtual MessageDataBundle messageMetadata(const QString &mailbox, const uint uid) const;
+    virtual void setMessageMetadata(const QString &mailbox, const uint uid, const MessageDataBundle &metadata);
 
-    virtual QStringList msgFlags(const QString &mailbox, uint uid) const;
-    virtual void setMsgFlags(const QString &mailbox, uint uid, const QStringList &newFlags);
+    virtual QStringList msgFlags(const QString &mailbox, const uint uid) const;
+    virtual void setMsgFlags(const QString &mailbox, const uint uid, const QStringList &newFlags);
 
-    virtual QByteArray messagePart(const QString &mailbox, uint uid, const QString &partId) const;
-    virtual void setMsgPart(const QString &mailbox, uint uid, const QString &partId, const QByteArray &data);
+    virtual QByteArray messagePart(const QString &mailbox, const uint uid, const QByteArray &partId) const;
+    virtual void setMsgPart(const QString &mailbox, const uint uid, const QByteArray &partId, const QByteArray &data);
+    virtual void forgetMessagePart(const QString &mailbox, const uint uid, const QByteArray &partId);
 
     virtual QVector<Imap::Responses::ThreadingNode> messageThreading(const QString &mailbox);
     virtual void setMessageThreading(const QString &mailbox, const QVector<Imap::Responses::ThreadingNode> &threading);
@@ -85,26 +75,17 @@ public:
     virtual void setRenewalThreshold(const int days);
 
 private:
-    bool loadData();
-    bool saveData() const;
-
     QMap<QString, QList<MailboxMetadata> > mailboxes;
     QMap<QString, SyncState> syncState;
-    QMap<QString, QList<uint> > seqToUid;
+    QMap<QString, Imap::Uids> seqToUid;
     QMap<QString, QMap<uint,QStringList> > flags;
-    QMap<QString, QMap<uint, LightMessageDataBundle> > msgMetadata;
-    QMap<QString, QMap<uint, QMap<QString, QByteArray> > > parts;
+    QMap<QString, QMap<uint, MessageDataBundle> > msgMetadata;
+    QMap<QString, QMap<uint, QMap<QByteArray, QByteArray> > > parts;
     QMap<QString, QVector<Imap::Responses::ThreadingNode> > threads;
-
-
-    QString fileName;
 };
 
 }
 
 }
-
-QDataStream &operator>>(QDataStream &stream, Imap::Mailbox::MemoryCache::LightMessageDataBundle &x);
-QDataStream &operator<<(QDataStream &stream, const Imap::Mailbox::MemoryCache::LightMessageDataBundle &x);
 
 #endif /* IMAP_MODEL_MEMORYCACHE_H */

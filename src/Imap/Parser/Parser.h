@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -40,11 +40,13 @@
 
 class ImapParserParseTest;
 
+namespace Streams {
+class Socket;
+}
+
 /** @short Namespace for IMAP interaction */
 namespace Imap
 {
-
-class Socket;
 
 /** @short A handle identifying a command sent to the server */
 typedef QByteArray CommandHandle;
@@ -63,7 +65,7 @@ public:
     /** @short Constructor.
      *
      * Takes an QIODevice instance as a parameter. */
-    Parser(QObject *parent, Imap::Socket *socket, const uint myId);
+    Parser(QObject *parent, Streams::Socket *socket, const uint myId);
 
     ~Parser();
 
@@ -73,8 +75,15 @@ public:
     /** @short De-queue and return parsed response */
     QSharedPointer<Responses::AbstractResponse> getResponse();
 
+    /** @short Support of the LITERAL+ and LITERAL- extensions, RFC 7888 and RFC 2088 */
+    enum class LiteralPlus {
+        Unsupported, /**< @short No joy, use synchronizing literals */
+        Plus, /**< @short Unlimited LITERAL+ regardless of the size */
+        Minus, /**< @short Can use non-synchronizing literals if the size is <= 4kB */
+    };
+
     /** @short Enable/Disable sending literals using the LITERAL+ extension */
-    void enableLiteralPlus(const bool enabled=true);
+    void enableLiteralPlus(const LiteralPlus mode);
 
     uint parserId() const;
 
@@ -171,7 +180,7 @@ public slots:
     CommandHandle copy(const Sequence &seq, const QString &mailbox);
 
     /** @short UID command (FETCH), RFC3501 sect 6.4.8 */
-    CommandHandle uidFetch(const Sequence &seq, const QStringList &items);
+    CommandHandle uidFetch(const Sequence &seq, const QList<QByteArray> &items);
 
     /** @short UID command (STORE), RFC3501 sect 6.4.8 */
     CommandHandle uidStore(const Sequence &seq, const QString &item, const QString &value);
@@ -283,7 +292,7 @@ signals:
 
     /** @short A full line was received from the remote IMAP server
 
-    This signal is emited when a full line, including all embedded literals, have
+    This signal is emitted when a full line, including all embedded literals, have
     been received from the remote IMAP server, but before it was attempted to parse
     it. However,
     */
@@ -360,7 +369,7 @@ private:
     void queueResponse(const QSharedPointer<Responses::AbstractResponse> &resp);
 
     /** @short Connection to the IMAP server */
-    Socket *socket;
+    Streams::Socket *socket;
 
     /** @short Keeps track of the last-used command tag */
     unsigned int m_lastTagUsed;
@@ -374,13 +383,14 @@ private:
     bool idling;
     bool waitForInitialIdle;
 
-    bool literalPlus;
+    LiteralPlus m_literalPlus;
     bool waitingForContinuation;
     bool startTlsInProgress;
     bool compressDeflateInProgress;
     bool waitingForConnection;
     bool waitingForEncryption;
     bool waitingForSslPolicy;
+    bool m_expectsInitialGreeting;
 
     enum { ReadingLine, ReadingNumberOfBytes } readingMode;
     QByteArray currentLine;
@@ -389,6 +399,7 @@ private:
     QByteArray startTlsCommand;
     QByteArray startTlsReply;
     QByteArray compressDeflateCommand;
+    QByteArray literalCommandTag;
 
     /** @short Unique-id for debugging purposes */
     uint m_parserId;

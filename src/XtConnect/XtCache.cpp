@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -73,12 +73,12 @@ void XtCache::setMailboxSyncState( const QString& mailbox, const Imap::Mailbox::
     _sqlCache->setMailboxSyncState( mailbox, state );
 }
 
-QList<uint> XtCache::uidMapping( const QString& mailbox ) const
+Imap::Uids XtCache::uidMapping( const QString& mailbox ) const
 {
     return _sqlCache->uidMapping( mailbox );
 }
 
-void XtCache::setUidMapping( const QString& mailbox, const QList<uint>& seqToUid )
+void XtCache::setUidMapping( const QString& mailbox, const Imap::Uids& seqToUid )
 {
     _sqlCache->setUidMapping( mailbox, seqToUid );
 }
@@ -126,7 +126,7 @@ void XtCache::setMessageMetadata( const QString& mailbox, uint uid, const Messag
     Q_UNUSED(metadata);
 }
 
-QByteArray XtCache::messagePart( const QString& mailbox, uint uid, const QString& partId ) const
+QByteArray XtCache::messagePart( const QString& mailbox, const uint uid, const QByteArray& partId ) const
 {
     Q_UNUSED(mailbox);
     Q_UNUSED(uid);
@@ -134,12 +134,19 @@ QByteArray XtCache::messagePart( const QString& mailbox, uint uid, const QString
     return QByteArray();
 }
 
-void XtCache::setMsgPart( const QString& mailbox, uint uid, const QString& partId, const QByteArray& data )
+void XtCache::setMsgPart( const QString& mailbox, const uint uid, const QByteArray& partId, const QByteArray& data )
 {
     Q_UNUSED(mailbox);
     Q_UNUSED(uid);
     Q_UNUSED(partId);
     Q_UNUSED(data);
+}
+
+void XtCache::forgetMessagePart( const QString& mailbox, const uint uid, const QByteArray& partId )
+{
+    Q_UNUSED(mailbox);
+    Q_UNUSED(uid);
+    Q_UNUSED(partId);
 }
 
 XtCache::SavingState XtCache::messageSavingStatus( const QString &mailbox, const uint uid ) const

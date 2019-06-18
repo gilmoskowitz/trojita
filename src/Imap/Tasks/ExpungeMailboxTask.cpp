@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,10 +22,10 @@
 
 
 #include "ExpungeMailboxTask.h"
-#include "ItemRoles.h"
+#include "Imap/Model/ItemRoles.h"
+#include "Imap/Model/Model.h"
+#include "Imap/Model/MailboxTree.h"
 #include "KeepMailboxOpenTask.h"
-#include "Model.h"
-#include "MailboxTree.h"
 
 namespace Imap
 {
@@ -46,7 +46,7 @@ void ExpungeMailboxTask::perform()
     markAsActiveTask();
 
     if (! mailboxIndex.isValid()) {
-        _failed("Mailbox vanished before we could expunge it");
+        _failed(tr("Mailbox vanished before we could expunge it"));
         // FIXME: add proper fix/callback to the Model
         return;
     }
@@ -65,7 +65,7 @@ bool ExpungeMailboxTask::handleStateHelper(const Imap::Responses::State *const r
         if (resp->kind == Responses::OK) {
             _completed();
         } else {
-            _failed("Expunge failed");
+            _failed(tr("Expunge failed"));
         }
         return true;
     } else {

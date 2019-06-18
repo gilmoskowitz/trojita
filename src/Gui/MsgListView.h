@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -22,6 +22,7 @@
 #ifndef MSGLISTVIEW_H
 #define MSGLISTVIEW_H
 
+#include <QHeaderView>
 #include <QTreeView>
 
 class QSignalMapper;
@@ -32,8 +33,7 @@ class PrettyMsgListModel;
 }
 }
 
-namespace Gui
-{
+namespace Gui {
 
 /** @short A slightly tweaked QTreeView optimized for showing a list of messages in one mailbox
 
@@ -48,23 +48,37 @@ public:
     explicit MsgListView(QWidget *parent=0);
     virtual ~MsgListView() {}
     void setModel(QAbstractItemModel *model);
-protected:
+    void setAutoActivateAfterKeyNavigation(bool enabled);
+    void updateActionsAfterRestoredState();
     virtual int sizeHintForColumn(int column) const;
+    QHeaderView::ResizeMode resizeModeForColumn(const int column) const;
+protected:
+    void keyPressEvent(QKeyEvent *ke);
+    void keyReleaseEvent(QKeyEvent *ke);
     virtual void startDrag(Qt::DropActions supportedActions);
+    bool event(QEvent *event);
 private slots:
     void slotFixSize();
     /** @short Expand all items below current root index */
     void slotExpandWholeSubtree(const QModelIndex &rootIndex);
     /** @short Update header actions for showing/hiding columns */
-    void slotSectionCountChanged();
+    void slotUpdateHeaderActions();
     /** @short Show/hide a corresponding column */
     void slotHeaderSectionVisibilityToggled(int section);
     /** @short Pick up the change of the sort critera */
     void slotHandleSortCriteriaChanged(int column, Qt::SortOrder order);
+    /** @short conditionally emits activated(currentIndex()) for keyboard events */
+    void slotCurrentActivated();
+    void slotHandleNewColumns(int oldCount, int newCount);
 private:
     static Imap::Mailbox::PrettyMsgListModel *findPrettyMsgListModel(QAbstractItemModel *model);
 
     QSignalMapper *headerFieldsMapper;
+    QTimer *m_naviActivationTimer;
+    bool m_autoActivateAfterKeyNavigation;
+    bool m_autoResizeSections;
+
+    friend class MainWindow; // needs access to slotHandleNewColumns
 };
 
 }

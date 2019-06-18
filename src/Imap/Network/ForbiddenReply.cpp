@@ -1,4 +1,4 @@
-/* Copyright (C) 2006 - 2013 Jan Kundrát <jkt@flaska.net>
+/* Copyright (C) 2006 - 2014 Jan Kundrát <jkt@flaska.net>
 
    This file is part of the Trojita Qt IMAP e-mail client,
    http://trojita.flaska.net/
@@ -32,6 +32,7 @@ ForbiddenReply::ForbiddenReply(QObject *parent):
     QNetworkReply(parent)
 {
     setError(QNetworkReply::ContentOperationNotPermittedError, tr("Remote Content Is Banned"));
+    setFinished(true);
     QTimer::singleShot(0, this, SLOT(slotFinish()));
 }
 
