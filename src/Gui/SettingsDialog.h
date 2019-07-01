@@ -32,6 +32,7 @@
 #include "ui_SettingsImapPage.h"
 #include "ui_SettingsCachePage.h"
 #include "ui_SettingsOutgoingPage.h"
+#include "ui_SettingsXtConnectPage.h"
 
 class QCheckBox;
 class QComboBox;
@@ -181,6 +182,7 @@ public:
     virtual bool passwordFailures(QString &message) const;
 #ifdef XTUPLE_CONNECT
     bool hasPassword() const;
+    QLineEdit *imapPassField() { return imapPass; };
 #endif
 
 private:
@@ -233,26 +235,26 @@ signals:
 
 #ifdef XTUPLE_CONNECT
 class SettingsDialog;
-class XtConnectPage : public QWidget
+class XtConnectPage : public QScrollArea, Ui_XtConnectPage, public ConfigurationWidgetInterface
 {
     Q_OBJECT
 public:
     XtConnectPage(QWidget *parent, QSettings &s, ImapPage *imapPage);
     void save(QSettings &s);
+    virtual QWidget *asWidget();
+    virtual bool checkValidity() const;
+    virtual bool passwordFailures(QString &message) const;
     virtual void showEvent(QShowEvent *event);
+
 public slots:
     void saveXtConfig();
     void runXtConnect();
-private:
-    QLineEdit *cacheDir;
-    QPointer<ImapPage> imap;
 
-    QLineEdit *hostName;
-    QSpinBox *port;
-    QLineEdit *dbName;
-    QLineEdit *username;
-    QLabel *imapPasswordWarning;
-    QCheckBox *debugLog;
+private slots:
+    void updateWidgets();
+
+private:
+    QPointer<ImapPage> imap;
 
     XtConnectPage(const XtConnectPage &); // don't implement
     XtConnectPage &operator=(const XtConnectPage &); // don't implement

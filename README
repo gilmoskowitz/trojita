@@ -2,3 +2,14 @@ This is Trojitá, a Qt IMAP e-mail client.
 
 More information about Trojitá are avilable from its homepage at
 http://trojita.flaska.net/
+
+To build for xTuple Connect:
+- Install CMake if you don't have it already
+- `git clone https://github.com/xtuple/trojita`
+- `cd trojita`
+- verify that xTuple's default branch is checked out
+- `mkdir build`
+- `cmake ../CMakeLists.txt`
+- `make`
+
+We still need to work out bundling issues.

@@ -46,6 +46,7 @@
 #include "SettingsDialog.h"
 #include "Composer/SenderIdentitiesModel.h"
 #include "Common/InvokeMethod.h"
+#include "Common/Paths.h"
 #include "Common/PortNumbers.h"
 #include "Common/SettingsNames.h"
 #include "Gui/Util.h"
@@ -89,11 +90,12 @@ SettingsDialog::SettingsDialog(MainWindow *parent, Composer::SenderIdentitiesMod
     stack->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::MinimumExpanding);
 
     addPage(new GeneralPage(this, *m_settings, m_senderIdentities), tr("&General"));
-    addPage(new ImapPage(this, *m_settings), tr("I&MAP"));
+    ImapPage *imap = new ImapPage(this, *m_settings);
+    addPage(imap, tr("I&MAP"));
     addPage(new CachePage(this, *m_settings), tr("&Offline"));
     addPage(new OutgoingPage(this, *m_settings), tr("&SMTP"));
 #ifdef XTUPLE_CONNECT
-    addPage(xtConnect = new XtConnectPage(this, *m_settings, imap), tr("&xTuple"));
+    addPage(new XtConnectPage(this, *m_settings, imap), tr("&xTuple"));
 #endif
 
     buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, Qt::Horizontal, this);
@@ -187,9 +189,6 @@ void SettingsDialog::accept()
         page->save(*m_settings);
     }
 
-#ifdef XTUPLE_CONNECT
-    xtConnect->save(*m_settings);
-#endif
     m_settings->sync();
 #ifndef Q_OS_WIN
     settingsFile.setPermissions(QFile::ReadUser | QFile::WriteUser);
@@ -1109,65 +1108,42 @@ bool OutgoingPage::passwordFailures(QString &message) const
 }
 
 #ifdef XTUPLE_CONNECT
-XtConnectPage::XtConnectPage(QWidget *parent, QSettings &s, ImapPage *imapPage): QWidget(parent), imap(imapPage)
+XtConnectPage::XtConnectPage(QWidget *parent, QSettings &s, ImapPage *imapPage): QScrollArea(parent), Ui_XtConnectPage(), imap(imapPage)
 {
-    // Take care not to clash with the cache of the GUI
-    QString cacheLocation = Common::writablePath(Common::LOCATION_CACHE) + QString::fromAscii("xtconnect-trojita");
-    QFormLayout *layout = new QFormLayout(this);
-    cacheDir = new QLineEdit(s.value(Common::SettingsNames::xtConnectCacheDirectory, cacheLocation).toString(), this);
-    layout->addRow(tr("Cache Directory"), cacheDir);
+    Ui_XtConnectPage::setupUi(this);
 
-    QGroupBox *box = new QGroupBox(tr("Mailboxes to synchronize"), this);
-    QVBoxLayout *boxLayout = new QVBoxLayout(box);
-    QListWidget *mailboxes = new QListWidget(box);
+    // Take care not to clash with the cache of the GUI
+    cacheDir->setText(s.value(Common::SettingsNames::xtConnectCacheDirectory,
+                              QString(Common::writablePath(Common::LOCATION_CACHE) + QLatin1String("xtconnect-trojita"))
+                             ).toString());
+
+    qDebug() << s.value(Common::SettingsNames::xtSyncMailboxList).toStringList();
     mailboxes->addItems(s.value(Common::SettingsNames::xtSyncMailboxList).toStringList());
     for (int i = 0; i < mailboxes->count(); ++i) {
         mailboxes->item(i)->setFlags(Qt::ItemIsEnabled);
     }
-    mailboxes->setToolTip(tr("Please use context menu inside the main application to select mailboxes to synchronize"));
-    boxLayout->addWidget(mailboxes);
-    layout->addRow(box);
 
-    QString optionHost = s.value(Common::SettingsNames::xtDbHost).toString();
-    int optionPort = s.value(Common::SettingsNames::xtDbPort, QVariant(5432)).toInt();
-    QString optionDbname = s.value(Common::SettingsNames::xtDbDbName).toString();
-    QString optionUsername = s.value(Common::SettingsNames::xtDbUser).toString();
+    hostName->setText(s.value(Common::SettingsNames::xtDbHost).toString());
+    port->setValue(s.value(Common::SettingsNames::xtDbPort, QVariant(5432)).toInt());
+    dbName->setText(s.value(Common::SettingsNames::xtDbDbName).toString());
+    username->setText(s.value(Common::SettingsNames::xtDbUser).toString());
 
     QStringList args = QCoreApplication::arguments();
     for (int i = 1; i < args.length(); i++) {
-        if (args.at(i) == "-h" && args.length() > i)
-            optionHost = args.at(++i);
-        else if (args.at(i) == "-d" && args.length() > i)
-            optionDbname = args.at(++i);
-        else if (args.at(i) == "-p" && args.length() > i)
-            optionPort = args.at(++i).toInt();
-        else if (args.at(i) == "-U" && args.length() > i)
-            optionUsername = args.at(++i);
+        if (args.at(i) == QLatin1String("-h") && args.length() > i)
+            hostName->setText(args.at(++i));
+        else if (args.at(i) == QLatin1String("-d") && args.length() > i)
+            dbName->setText(args.at(++i));
+        else if (args.at(i) == QLatin1String("-p") && args.length() > i)
+            port->setValue(args.at(++i).toInt());
+        else if (args.at(i) == QLatin1String("-U") && args.length() > i)
+            username->setText(args.at(++i));
     }
 
-
-    hostName = new QLineEdit(optionHost);
-    layout->addRow(tr("DB Hostname"), hostName);
-    port = new QSpinBox();
-    port->setRange(1, 65535);
-    port->setValue(optionPort);
-    layout->addRow(tr("DB Port"), port);
-    dbName = new QLineEdit(optionDbname);
-    layout->addRow(tr("DB Name"), dbName);
-    username = new QLineEdit(optionUsername);
-    layout->addRow(tr("DB Username"), username);
-
-    imapPasswordWarning = new QLabel(tr("Please fill in all IMAP options, including the password, at the IMAP page. "
-                                        "If you do not save the password, background synchronization will not run."), this);
-    imapPasswordWarning->setWordWrap(true);
     imapPasswordWarning->setStyleSheet(SettingsDialog::warningStyleSheet);
-    layout->addRow(imapPasswordWarning);
-    debugLog = new QCheckBox();
-    layout->addRow(tr("Debugging"), debugLog);
-
-    QPushButton *btn = new QPushButton(tr("Run xTuple Synchronization"));
-    connect(btn, SIGNAL(clicked()), this, SLOT(runXtConnect()));
-    layout->addRow(btn);
+    connect(runXTupleSync,         &QAbstractButton::clicked, this, &XtConnectPage::runXtConnect);
+    if (imap && imap->imapPassField())
+      connect(imap->imapPassField(), &QLineEdit::textChanged, this, &XtConnectPage::updateWidgets);
 }
 
 void XtConnectPage::save(QSettings &s)
@@ -1177,36 +1153,29 @@ void XtConnectPage::save(QSettings &s)
     s.setValue(Common::SettingsNames::xtDbPort, port->value());
     s.setValue(Common::SettingsNames::xtDbDbName, dbName->text());
     s.setValue(Common::SettingsNames::xtDbUser, username->text());
+
     saveXtConfig();
     emit saved();
 }
 
-void XtConnectPage::saveXtConfig()
+QWidget *XtConnectPage::asWidget()
 {
-    QSettings s(QSettings::UserScope, QString::fromLatin1("xTuple.com"), QString::fromLatin1("xTuple"));
+    return this;
+}
 
-    // Copy the IMAP settings
-    Q_ASSERT(imap);
-    imap->save(s);
+bool XtConnectPage::checkValidity() const
+{
+    return true;
+}
 
-    // XtConnect-specific stuff
-    s.setValue(Common::SettingsNames::xtConnectCacheDirectory, cacheDir->text());
-    QStringList keys = QStringList() <<
-                       Common::SettingsNames::xtSyncMailboxList <<
-                       Common::SettingsNames::xtDbHost <<
-                       Common::SettingsNames::xtDbPort <<
-                       Common::SettingsNames::xtDbDbName <<
-                       Common::SettingsNames::xtDbUser <<
-                       Common::SettingsNames::imapSslPemPubKey;
-    Q_FOREACH(const QString &key, keys) {
-        s.setValue(key, QSettings().value(key));
-    }
+bool XtConnectPage::passwordFailures(QString &message) const
+{
+    return imap ? imap->passwordFailures(message) : false;
 }
 
 void XtConnectPage::runXtConnect()
 {
-    // First of all, let's save the XTuple-specific configuration to save useless debugging
-    saveXtConfig();
+    saveXtConfig(); // save the xTuple-specific configuration so it's available to the sync client
 
     QString path = QCoreApplication::applicationFilePath();
     QStringList args;
@@ -1246,12 +1215,42 @@ void XtConnectPage::runXtConnect()
     QProcess::startDetached(cmd, args);
 }
 
+void XtConnectPage::saveXtConfig()
+{
+    QSettings s(QSettings::UserScope, QString::fromLatin1("xTuple.com"), QString::fromLatin1("xTuple"));
+
+    // Copy the IMAP settings
+    Q_ASSERT(imap);
+    imap->save(s);
+
+    // XtConnect-specific stuff
+    s.setValue(Common::SettingsNames::xtConnectCacheDirectory, cacheDir->text());
+    QStringList keys = QStringList() <<
+                       Common::SettingsNames::xtSyncMailboxList <<
+                       Common::SettingsNames::xtDbHost <<
+                       Common::SettingsNames::xtDbPort <<
+                       Common::SettingsNames::xtDbDbName <<
+                       Common::SettingsNames::xtDbUser <<
+                       Common::SettingsNames::imapSslPemPubKey;
+    Q_FOREACH(const QString &key, keys) {
+        s.setValue(key, QSettings().value(key));
+    }
+}
+
 void XtConnectPage::showEvent(QShowEvent *event)
 {
     if (imap) {
         imapPasswordWarning->setVisible(! imap->hasPassword());
     }
     QWidget::showEvent(event);
+}
+
+void XtConnectPage::updateWidgets()
+{
+    if (imap) {
+        imapPasswordWarning->setVisible(! imap->hasPassword());
+    }
+    emit widgetsUpdated();
 }
 
 bool ImapPage::hasPassword() const

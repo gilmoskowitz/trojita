@@ -392,6 +392,7 @@ set(libDesktopGui_UI
     ${path_DesktopGui}/SettingsGeneralPage.ui
     ${path_DesktopGui}/SettingsImapPage.ui
     ${path_DesktopGui}/SettingsOutgoingPage.ui
+    ${path_DesktopGui}/SettingsXtConnectPage.ui
     ${path_DesktopGui}/ShortcutHandler/ShortcutConfigWidget.ui
 )
 set(libDesktopGui_RESOURCES
@@ -625,6 +626,7 @@ qt5_use_modules(Composer Gui Network)
 
 add_library(Imap STATIC ${libImap_SOURCES})
 set_property(TARGET Imap APPEND PROPERTY COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII QT_NO_CAST_TO_ASCII)
+set_property(TARGET Imap APPEND PROPERTY COMPILE_DEFINITIONS XTUPLE_CONNECT)
 target_link_libraries(Imap Common Streams UiUtils)
 qt5_use_modules(Imap Gui Network Sql)
 
@@ -710,6 +712,7 @@ if(WITH_DESKTOP)
 
     add_library(DesktopGui STATIC ${libDesktopGui_SOURCES} ${libDesktopGui_UI_OUT} ${libDesktopGui_RESOURCES_OUT})
     set_property(TARGET DesktopGui APPEND PROPERTY COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII QT_NO_CAST_TO_ASCII)
+    set_property(TARGET DesktopGui APPEND PROPERTY COMPILE_DEFINITIONS XTUPLE_CONNECT)
     # The following is needed for the LineEdit widget within the .ui files.
     # The ${path_DesktopGui} is needed so that the generated ui_*.h file can find the headers of the custom widgets
     set_property(TARGET DesktopGui APPEND PROPERTY INCLUDE_DIRECTORIES ${path_DesktopGui})

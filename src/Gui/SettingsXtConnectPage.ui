@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>XtConnectPage</class>
+ <widget class="QScrollArea" name="XtConnectPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>340</width>
+    <height>384</height>
+   </rect>
+  </property>
+  <property name="frameShadow">
+   <enum>QFrame::Plain</enum>
+  </property>
+  <property name="widgetResizable">
+   <bool>true</bool>
+  </property>
+  <widget class="QWidget" name="scrollAreaWidgetContents">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>-176</y>
+     <width>323</width>
+     <height>558</height>
+    </rect>
+   </property>
+   <layout class="QFormLayout" name="formLayout">
+    <property name="fieldGrowthPolicy">
+     <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+    </property>
+    <item row="1" column="0">
+     <widget class="QLabel" name="cacheDirLabel">
+      <property name="text">
+       <string>Cache Directory</string>
+      </property>
+     </widget>
+    </item>
+    <item row="1" column="1">
+     <widget class="QLineEdit" name="cacheDir"/>
+    </item>
+    <item row="3" column="0">
+     <widget class="QLabel" name="hostNameLabel">
+      <property name="text">
+       <string>DB Hostname</string>
+      </property>
+     </widget>
+    </item>
+    <item row="4" column="0">
+     <widget class="QLabel" name="portLabel">
+      <property name="text">
+       <string>DB Port</string>
+      </property>
+     </widget>
+    </item>
+    <item row="5" column="0">
+     <widget class="QLabel" name="dbNameLabel">
+      <property name="text">
+       <string>DB Name</string>
+      </property>
+     </widget>
+    </item>
+    <item row="6" column="0">
+     <widget class="QLabel" name="usernameLabel">
+      <property name="text">
+       <string>DB Username</string>
+      </property>
+     </widget>
+    </item>
+    <item row="4" column="1">
+     <widget class="QSpinBox" name="port">
+      <property name="minimum">
+       <number>1</number>
+      </property>
+      <property name="maximum">
+       <number>65535</number>
+      </property>
+     </widget>
+    </item>
+    <item row="3" column="1">
+     <widget class="QLineEdit" name="hostName"/>
+    </item>
+    <item row="5" column="1">
+     <widget class="QLineEdit" name="dbName"/>
+    </item>
+    <item row="6" column="1">
+     <widget class="QLineEdit" name="username"/>
+    </item>
+    <item row="7" column="0" colspan="2">
+     <widget class="QLabel" name="imapPasswordWarning">
+      <property name="text">
+       <string>Please fill in all IMAP options, including the password, at the IMAP page. If you do not save the password, background synchronization will not run.</string>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item row="9" column="0">
+     <widget class="QLabel" name="debugLogLabel">
+      <property name="text">
+       <string>Debugging</string>
+      </property>
+     </widget>
+    </item>
+    <item row="9" column="1">
+     <widget class="QCheckBox" name="debugLog">
+      <property name="text">
+       <string/>
+      </property>
+     </widget>
+    </item>
+    <item row="10" column="0" colspan="2">
+     <widget class="QPushButton" name="runXTupleSync">
+      <property name="text">
+       <string>Run xTuple Synchronization</string>
+      </property>
+     </widget>
+    </item>
+    <item row="8" column="0" colspan="2">
+     <widget class="QGroupBox" name="mailboxesToSynchronizeGroupBox">
+      <property name="title">
+       <string>Mailboxes to synchronize</string>
+      </property>
+      <layout class="QVBoxLayout" name="mailboxesToSynchronizeVBoxLayout">
+       <item>
+        <widget class="QListWidget" name="mailboxes">
+         <property name="toolTip">
+          <string>Please use context menu inside the main application to select mailboxes to synchronize</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <tabstops>
+  <tabstop>cacheDir</tabstop>
+  <tabstop>hostName</tabstop>
+  <tabstop>port</tabstop>
+  <tabstop>dbName</tabstop>
+  <tabstop>username</tabstop>
+  <tabstop>mailboxes</tabstop>
+  <tabstop>debugLog</tabstop>
+  <tabstop>runXTupleSync</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>
